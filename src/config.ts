@@ -29,5 +29,7 @@ export function paths(config: RtvConfig) {
       path.join(storePath, "devices", deviceName, project),
     snapshot: (project: string) =>
       path.join(storePath, "devices", deviceName, project, "snapshot.yaml"),
+    projectMemory: (project: string) =>
+      path.join(storePath, "desired-state", project, "memory"),
   };
 }

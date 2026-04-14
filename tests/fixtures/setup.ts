@@ -2,7 +2,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { writeYaml } from "../../src/utils/yaml.js";
-import type { Manifest, PersonasFile, GlobalSettings } from "../../src/types.js";
+import { serializeMemory } from "../../src/utils/memory-parser.js";
+import type { Manifest, PersonasFile, GlobalSettings, MemoryEntry } from "../../src/types.js";
 
 export interface TestStore {
   storePath: string;
@@ -92,4 +93,51 @@ export async function seedProject(
     path.join(projectDir, "rules", "project.md"),
     "# Project Rules\n- This project specific rule\n"
   );
+}
+
+export async function seedMemory(store: TestStore, projectName?: string): Promise<void> {
+  // Global memories
+  const globalMemDir = path.join(store.storePath, "global", "memory");
+  fs.mkdirSync(globalMemDir, { recursive: true });
+
+  const globalMem: MemoryEntry = {
+    name: "global-user-profile",
+    description: "User profile info",
+    type: "user",
+    body: "사용자는 백엔드 엔지니어입니다.\n",
+  };
+  fs.writeFileSync(
+    path.join(globalMemDir, "global-user-profile.md"),
+    serializeMemory(globalMem)
+  );
+
+  const globalFeedback: MemoryEntry = {
+    name: "global-feedback",
+    description: "Global feedback",
+    type: "feedback",
+    body: "TDD를 선호합니다.\n",
+  };
+  fs.writeFileSync(
+    path.join(globalMemDir, "global-feedback.md"),
+    serializeMemory(globalFeedback)
+  );
+
+  // Project memories (if projectName given)
+  if (projectName) {
+    const projectMemDir = path.join(
+      store.storePath, "desired-state", projectName, "memory"
+    );
+    fs.mkdirSync(projectMemDir, { recursive: true });
+
+    const projectMem: MemoryEntry = {
+      name: "project-note",
+      description: "Project specific note",
+      type: "project",
+      body: "이 프로젝트는 MCP 서버입니다.\n",
+    };
+    fs.writeFileSync(
+      path.join(projectMemDir, "project-note.md"),
+      serializeMemory(projectMem)
+    );
+  }
 }
