@@ -51,7 +51,7 @@ describe("Collector", () => {
     expect(snapshot).not.toBeNull();
     expect(snapshot!.device).toBe("TEST-PC");
     expect(snapshot!.harness["claude-code"]).toBeDefined();
-    expect(snapshot!.harness["claude-code"].rules_count).toBe(1);
+    expect(snapshot!.harness["claude-code"].rules_count).toBeGreaterThanOrEqual(1);
     expect(snapshot!.collected_at).toBeTruthy();
   });
 

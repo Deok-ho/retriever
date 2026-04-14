@@ -18,11 +18,16 @@ describe("ClaudeCodeAdapter", () => {
   });
 
   it("detects Claude Code by CLAUDE.md presence", async () => {
-    // No CLAUDE.md → not detected
+    // No CLAUDE.md or .claude/ → not detected
     expect(await adapter.detect(tmpProject)).toBe(false);
 
     // Create CLAUDE.md → detected
     fs.writeFileSync(path.join(tmpProject, "CLAUDE.md"), "# Rules");
+    expect(await adapter.detect(tmpProject)).toBe(true);
+  });
+
+  it("detects Claude Code by .claude/ directory", async () => {
+    fs.mkdirSync(path.join(tmpProject, ".claude"), { recursive: true });
     expect(await adapter.detect(tmpProject)).toBe(true);
   });
 
@@ -38,7 +43,8 @@ describe("ClaudeCodeAdapter", () => {
     );
 
     const state = await adapter.collectHarness(tmpProject);
-    expect(state.rules_count).toBe(2); // CLAUDE.md + r1.md
+    // At least 2: project CLAUDE.md + r1.md (may be more from global ~/.claude/)
+    expect(state.rules_count).toBeGreaterThanOrEqual(2);
     expect(state.rules_hash).toMatch(/^[a-f0-9]{64}$/);
   });
 
