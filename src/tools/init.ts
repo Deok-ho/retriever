@@ -1,7 +1,10 @@
 import * as fs from "node:fs/promises";
-import type { RtvConfig, Manifest } from "../types.js";
+import type { RtvConfig, Manifest, HarnessConfig } from "../types.js";
 import { paths } from "../config.js";
 import { writeYaml } from "../utils/yaml.js";
+import { ClaudeCodeAdapter } from "../adapters/claude-code.js";
+import { CodexAdapter } from "../adapters/codex.js";
+import type { ToolAdapter } from "../adapters/base.js";
 
 interface InitParams {
   name: string;
@@ -33,6 +36,23 @@ export async function handleInit(
     // expected — doesn't exist yet
   }
 
+  // Auto-detect harness tools
+  const adapters: ToolAdapter[] = [new ClaudeCodeAdapter(), new CodexAdapter()];
+  const harness: Record<string, HarnessConfig> = {};
+  for (const adapter of adapters) {
+    if (await adapter.detect(params.path)) {
+      if (adapter.name === "codex") {
+        harness[adapter.name] = { instructions: "./rules/" };
+      } else {
+        harness[adapter.name] = { rules: "./rules/", memory: "./memory/" };
+      }
+    }
+  }
+  // Default to claude-code if nothing detected
+  if (Object.keys(harness).length === 0) {
+    harness["claude-code"] = { rules: "./rules/", memory: "./memory/" };
+  }
+
   const manifest: Manifest = {
     project: {
       name: params.name,
@@ -40,12 +60,7 @@ export async function handleInit(
       created: new Date().toISOString().split("T")[0],
     },
     persona: params.persona,
-    harness: {
-      "claude-code": {
-        rules: "./rules/",
-        memory: "./memory/",
-      },
-    },
+    harness,
     sync: {
       sessions: true,
       conversations: true,

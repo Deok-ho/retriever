@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import * as fs from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
 import { handleInit } from "../../src/tools/init.js";
 import { readYaml } from "../../src/utils/yaml.js";
 import { createTestStore, seedStore, type TestStore } from "../fixtures/setup.js";
@@ -53,5 +55,41 @@ describe("rtv_init", () => {
 
     expect(result.success).toBe(false);
     expect(result.message).toContain("이미 존재");
+  });
+
+  it("auto-detects codex harness", async () => {
+    const tmpProject = fs.mkdtempSync(path.join(os.tmpdir(), "rtv-init-"));
+    fs.mkdirSync(path.join(tmpProject, ".codex"), { recursive: true });
+
+    const result = await handleInit(
+      { name: "codex-proj", path: tmpProject, persona: "personal" },
+      { storePath: store.storePath, deviceName: "TEST-PC" }
+    );
+    expect(result.success).toBe(true);
+
+    const manifest = await readYaml<Manifest>(
+      path.join(store.storePath, "desired-state", "codex-proj", "manifest.yaml")
+    );
+    expect(manifest!.harness["codex"]).toBeDefined();
+    expect(manifest!.harness["codex"].instructions).toBe("./rules/");
+
+    fs.rmSync(tmpProject, { recursive: true, force: true });
+  });
+
+  it("defaults to claude-code when nothing detected", async () => {
+    const tmpProject = fs.mkdtempSync(path.join(os.tmpdir(), "rtv-init-"));
+
+    const result = await handleInit(
+      { name: "empty-proj", path: tmpProject, persona: "personal" },
+      { storePath: store.storePath, deviceName: "TEST-PC" }
+    );
+    expect(result.success).toBe(true);
+
+    const manifest = await readYaml<Manifest>(
+      path.join(store.storePath, "desired-state", "empty-proj", "manifest.yaml")
+    );
+    expect(manifest!.harness["claude-code"]).toBeDefined();
+
+    fs.rmSync(tmpProject, { recursive: true, force: true });
   });
 });
