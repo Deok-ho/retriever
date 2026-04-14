@@ -1,0 +1,67 @@
+import * as fs from "node:fs/promises";
+import type { RtvConfig, Manifest } from "../types.js";
+import { paths } from "../config.js";
+import { writeYaml } from "../utils/yaml.js";
+
+interface InitParams {
+  name: string;
+  path: string;
+  persona: string;
+  description?: string;
+}
+
+interface InitResult {
+  success: boolean;
+  message: string;
+}
+
+export async function handleInit(
+  params: InitParams,
+  config: RtvConfig
+): Promise<InitResult> {
+  const p = paths(config);
+  const projectDir = p.desiredState(params.name);
+
+  // Check if project already exists
+  try {
+    await fs.access(projectDir);
+    return {
+      success: false,
+      message: `"${params.name}" 프로젝트가 이미 존재합니다`,
+    };
+  } catch {
+    // expected — doesn't exist yet
+  }
+
+  const manifest: Manifest = {
+    project: {
+      name: params.name,
+      description: params.description ?? "",
+      created: new Date().toISOString().split("T")[0],
+    },
+    persona: params.persona,
+    harness: {
+      "claude-code": {
+        rules: "./rules/",
+        memory: "./memory/",
+      },
+    },
+    sync: {
+      sessions: true,
+      conversations: true,
+      tasks: true,
+      plans: true,
+    },
+  };
+
+  await writeYaml(p.manifest(params.name), manifest);
+
+  // Create subdirectories
+  await fs.mkdir(`${projectDir}/rules`, { recursive: true });
+  await fs.mkdir(`${projectDir}/memory`, { recursive: true });
+
+  return {
+    success: true,
+    message: `프로젝트 "${params.name}" 등록 완료 (persona: ${params.persona})`,
+  };
+}
