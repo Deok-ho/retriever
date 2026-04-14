@@ -9,6 +9,11 @@ import { handleStatus } from "./tools/status.js";
 import { handleDiff } from "./tools/diff.js";
 import { handleApply } from "./tools/apply.js";
 import { handleProjects } from "./tools/projects.js";
+import { handleMemoryList } from "./tools/memory-list.js";
+import { handleMemorySearch } from "./tools/memory-search.js";
+import { handleMemoryRead } from "./tools/memory-read.js";
+import { handleMemoryWrite } from "./tools/memory-write.js";
+import { handleMemoryDelete } from "./tools/memory-delete.js";
 
 const config = loadConfig();
 
@@ -122,6 +127,88 @@ server.tool(
     );
     return {
       content: [{ type: "text" as const, text: lines.join("\n") }],
+    };
+  }
+);
+
+// === Memory Hub ===
+
+server.tool(
+  "rtv_memory_list",
+  "프로젝트 메모리 목록을 출력합니다 (글로벌 + 프로젝트 병합)",
+  {
+    project: z.string().describe("프로젝트 이름"),
+    type: z
+      .enum(["user", "feedback", "project", "reference"])
+      .optional()
+      .describe("메모리 타입 필터"),
+  },
+  async ({ project, type }) => {
+    const result = await handleMemoryList({ project, type }, config);
+    return { content: [{ type: "text" as const, text: result.message }] };
+  }
+);
+
+server.tool(
+  "rtv_memory_search",
+  "키워드로 메모리를 검색합니다",
+  {
+    project: z.string().describe("프로젝트 이름"),
+    query: z.string().describe("검색 키워드"),
+  },
+  async ({ project, query }) => {
+    const result = await handleMemorySearch({ project, query }, config);
+    return { content: [{ type: "text" as const, text: result.message }] };
+  }
+);
+
+server.tool(
+  "rtv_memory_read",
+  "특정 메모리의 상세 내용을 읽습니다",
+  {
+    project: z.string().describe("프로젝트 이름"),
+    name: z.string().describe("메모리 이름"),
+  },
+  async ({ project, name }) => {
+    const result = await handleMemoryRead({ project, name }, config);
+    return {
+      content: [{ type: "text" as const, text: result.message }],
+      isError: !result.success,
+    };
+  }
+);
+
+server.tool(
+  "rtv_memory_write",
+  "메모리를 생성하거나 수정합니다 (프로젝트 메모리에 저장)",
+  {
+    project: z.string().describe("프로젝트 이름"),
+    name: z.string().describe("메모리 이름"),
+    type: z.enum(["user", "feedback", "project", "reference"]).describe("메모리 타입"),
+    content: z.string().describe("메모리 본문"),
+    description: z.string().optional().describe("메모리 설명 (한 줄)"),
+  },
+  async ({ project, name, type, content, description }) => {
+    const result = await handleMemoryWrite(
+      { project, name, type, content, description },
+      config
+    );
+    return { content: [{ type: "text" as const, text: result.message }] };
+  }
+);
+
+server.tool(
+  "rtv_memory_delete",
+  "프로젝트 메모리를 삭제합니다 (글로벌 메모리는 삭제 불가)",
+  {
+    project: z.string().describe("프로젝트 이름"),
+    name: z.string().describe("메모리 이름"),
+  },
+  async ({ project, name }) => {
+    const result = await handleMemoryDelete({ project, name }, config);
+    return {
+      content: [{ type: "text" as const, text: result.message }],
+      isError: !result.success,
     };
   }
 );
