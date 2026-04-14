@@ -12,6 +12,7 @@ import { paths } from "../config.js";
 import { readYaml, writeYaml } from "../utils/yaml.js";
 import { getRepoState } from "../utils/git.js";
 import { ClaudeCodeAdapter } from "../adapters/claude-code.js";
+import { CodexAdapter } from "../adapters/codex.js";
 import type { ToolAdapter } from "../adapters/base.js";
 
 const exec = promisify(execFile);
@@ -22,7 +23,7 @@ export class Collector {
 
   constructor(config: RtvConfig) {
     this.config = config;
-    this.adapters = [new ClaudeCodeAdapter()];
+    this.adapters = [new ClaudeCodeAdapter(), new CodexAdapter()];
   }
 
   async collect(projectName: string, projectPath: string): Promise<Snapshot> {
