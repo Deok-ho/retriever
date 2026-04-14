@@ -95,6 +95,18 @@ export interface DiffReport {
   summary: { match: number; mismatch: number; missing: number };
 }
 
+// === Memory ===
+export type MemoryType = "user" | "feedback" | "project" | "reference";
+
+export interface MemoryEntry {
+  name: string;
+  description: string;
+  type: MemoryType;
+  body: string;
+  filePath?: string;
+  source?: "global" | "project";
+}
+
 // === Adapter ===
 export interface ToolAdapter {
   name: string;
