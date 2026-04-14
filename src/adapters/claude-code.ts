@@ -110,14 +110,32 @@ export class ClaudeCodeAdapter implements ToolAdapter {
       // no global rules dir
     }
 
-    // Check memory
+    // Check memory — Claude Code stores project memory in
+    // ~/.claude/projects/{project-id}/memory/
+    // project-id: path with ':' '/' '\' → '-', case-insensitive match
     let memoryCount = 0;
+    const projectIdNorm = path.resolve(projectPath)
+      .replace(/[:\/\\]/g, "-")
+      .replace(/^-/, "")
+      .toLowerCase();
+    let projectMemDir = "";
+    const projectsDir = path.join(globalClaudeDir, "projects");
     try {
-      const memDir = path.join(projectPath, ".claude", "memory");
-      const entries = await fs.readdir(memDir);
-      memoryCount = entries.filter((e) => e.endsWith(".md")).length;
+      const dirs = await fs.readdir(projectsDir);
+      const match = dirs.find((d) => d.toLowerCase() === projectIdNorm);
+      if (match) {
+        projectMemDir = path.join(projectsDir, match, "memory");
+      }
     } catch {
-      // no memory dir
+      // no projects dir
+    }
+    if (projectMemDir) {
+      try {
+        const entries = await fs.readdir(projectMemDir);
+        memoryCount = entries.filter((e) => e.endsWith(".md") && e !== "MEMORY.md").length;
+      } catch {
+        // no memory dir
+      }
     }
 
     const combinedHash =
