@@ -1,11 +1,17 @@
 import { describe, it, expect } from "vitest";
 import { getRepoState } from "../../src/utils/git.js";
 import * as os from "node:os";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../.."
+);
 
 describe("git utils", () => {
   it("reads repo state from a git directory", async () => {
-    // Use this project's own repo as test subject
-    const state = await getRepoState("C:/Dev/personal/retriever");
+    const state = await getRepoState(repoRoot);
     expect(state).not.toBeNull();
     expect(state!.branch).toBeTruthy();
     expect(typeof state!.dirty).toBe("boolean");
