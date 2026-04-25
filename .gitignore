@@ -3,3 +3,5 @@ dist/
 .rtv-store/
 *.tsbuildinfo
 docs
+docs-local/
+.rtv-hub/

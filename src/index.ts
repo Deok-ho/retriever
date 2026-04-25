@@ -14,8 +14,11 @@ import { handleMemorySearch } from "./tools/memory-search.js";
 import { handleMemoryRead } from "./tools/memory-read.js";
 import { handleMemoryWrite } from "./tools/memory-write.js";
 import { handleMemoryDelete } from "./tools/memory-delete.js";
+import { HubService } from "./hub/service.js";
+import * as hubTools from "./hub/tools.js";
 
 const config = loadConfig();
+const hub = new HubService();
 
 const server = new McpServer({
   name: "retriever",
@@ -211,6 +214,214 @@ server.tool(
       isError: !result.success,
     };
   }
+);
+
+// === Hub (v3 MVP): SQLite 기반 티켓팅 ===
+
+server.tool(
+  "rtv_list_projects",
+  "프로젝트 목록을 출력합니다 (SQLite hub)",
+  {},
+  async () => ({ content: [{ type: "text" as const, text: hubTools.listProjects(hub) }] })
+);
+
+server.tool(
+  "rtv_upsert_project",
+  "프로젝트를 생성 또는 갱신합니다",
+  {
+    project_id: z.string().describe("프로젝트 ID (snake_case)"),
+    status: z.enum(["active", "paused", "done", "archived"]).optional(),
+    health: z.enum(["green", "yellow", "red"]).optional(),
+    priority: z.enum(["high", "med", "low"]).optional(),
+    phase: z.string().nullable().optional(),
+    repo_path: z.string().nullable().optional(),
+    harness_project: z.string().nullable().optional(),
+    purpose: z.string().nullable().optional().describe("장기 방향 (목적)"),
+    goal: z.string().nullable().optional().describe("단기 실행 (목표)"),
+    context_budget: z.number().int().optional(),
+    next_task_id: z.string().nullable().optional(),
+  },
+  async (input) => ({
+    content: [{ type: "text" as const, text: hubTools.upsertProject(hub, input) }],
+  })
+);
+
+server.tool(
+  "rtv_create_ticket",
+  "티켓을 생성합니다 (프로젝트가 없으면 자동 생성)",
+  {
+    project_id: z.string(),
+    task_id: z.string().describe("snake_case 고유 ID"),
+    summary: z.string().describe("한 줄 요약"),
+    status: z.enum(["todo", "in_progress", "review", "done", "blocked"]).optional(),
+    priority: z.enum(["high", "med", "low"]).optional(),
+    task_type: z.enum(["구현", "리서치", "문서", "리뷰"]).nullable().optional(),
+    body: z.string().optional(),
+    estimated_hours: z.number().nullable().optional(),
+    completion_criteria: z.array(z.string()).optional(),
+    context_refs: z.array(z.string()).optional().describe("wikilink 배열"),
+    intake_source: z.enum(["manual", "gemma4", "mcp", "import"]).optional(),
+  },
+  async (input) => ({
+    content: [{ type: "text" as const, text: hubTools.createTicket(hub, input) }],
+  })
+);
+
+server.tool(
+  "rtv_list_tickets",
+  "티켓 목록을 필터링해서 출력합니다",
+  {
+    project_id: z.string().optional(),
+    status: z
+      .union([
+        z.enum(["todo", "in_progress", "review", "done", "blocked"]),
+        z.array(z.enum(["todo", "in_progress", "review", "done", "blocked"])),
+      ])
+      .optional(),
+    priority: z.enum(["high", "med", "low"]).optional(),
+    limit: z.number().int().optional(),
+  },
+  async (filter) => ({
+    content: [{ type: "text" as const, text: hubTools.listTickets(hub, filter) }],
+  })
+);
+
+server.tool(
+  "rtv_read_ticket",
+  "티켓 상세(본문/기준/첨부/refs)를 출력합니다",
+  {
+    project_id: z.string(),
+    task_id: z.string(),
+  },
+  async ({ project_id, task_id }) => ({
+    content: [
+      {
+        type: "text" as const,
+        text: hubTools.readTicket(hub, project_id, task_id),
+      },
+    ],
+  })
+);
+
+server.tool(
+  "rtv_update_ticket",
+  "티켓 필드를 부분 갱신합니다",
+  {
+    project_id: z.string(),
+    task_id: z.string(),
+    status: z.enum(["todo", "in_progress", "review", "done", "blocked"]).optional(),
+    priority: z.enum(["high", "med", "low"]).optional(),
+    body: z.string().optional(),
+    actual_hours: z.number().nullable().optional(),
+    learnings: z.string().nullable().optional(),
+  },
+  async ({ project_id, task_id, ...patch }) => ({
+    content: [
+      {
+        type: "text" as const,
+        text: hubTools.updateTicket(hub, project_id, task_id, patch),
+      },
+    ],
+  })
+);
+
+server.tool(
+  "rtv_complete_ticket",
+  "criteria 충족 여부 확인 후 티켓을 done으로 승격합니다",
+  {
+    project_id: z.string(),
+    task_id: z.string(),
+    learnings: z.string().nullable().optional(),
+  },
+  async ({ project_id, task_id, learnings }) => ({
+    content: [
+      {
+        type: "text" as const,
+        text: hubTools.completeTicket(hub, project_id, task_id, learnings ?? null),
+      },
+    ],
+  })
+);
+
+server.tool(
+  "rtv_attach",
+  "티켓에 첨부를 추가합니다 (파일 또는 URL)",
+  {
+    project_id: z.string(),
+    task_id: z.string(),
+    kind: z.enum(["file", "url"]),
+    source_path: z.string().optional().describe("kind=file 시 원본 파일 경로 (복사됨)"),
+    type: z
+      .enum(["session", "diff", "research", "transcript"])
+      .optional()
+      .describe("kind=file 시 필수"),
+    url: z.string().optional().describe("kind=url 시 필수"),
+    note: z.string().optional().describe("kind=url 시 메모"),
+  },
+  async (input) => {
+    if (input.kind === "file") {
+      if (!input.source_path || !input.type) {
+        return {
+          content: [
+            { type: "text" as const, text: "kind=file: source_path, type 필수" },
+          ],
+          isError: true,
+        };
+      }
+      const text = await hubTools.attach(hub, {
+        kind: "file",
+        project_id: input.project_id,
+        task_id: input.task_id,
+        source_path: input.source_path,
+        type: input.type,
+      });
+      return { content: [{ type: "text" as const, text }] };
+    }
+    if (!input.url) {
+      return {
+        content: [{ type: "text" as const, text: "kind=url: url 필수" }],
+        isError: true,
+      };
+    }
+    const text = await hubTools.attach(hub, {
+      kind: "url",
+      project_id: input.project_id,
+      task_id: input.task_id,
+      url: input.url,
+      note: input.note,
+    });
+    return { content: [{ type: "text" as const, text }] };
+  }
+);
+
+server.tool(
+  "rtv_detach",
+  "첨부를 제거합니다 (파일도 삭제)",
+  {
+    attachment_id: z.string(),
+  },
+  async ({ attachment_id }) => ({
+    content: [
+      { type: "text" as const, text: await hubTools.detach(hub, attachment_id) },
+    ],
+  })
+);
+
+server.tool(
+  "rtv_classify_ticket",
+  "자연어 요청을 Gemma4로 분류하여 티켓 초안을 제안합니다",
+  {
+    request: z.string().describe("자연어 요청"),
+    project_hint: z.string().optional().describe("프로젝트 힌트"),
+  },
+  async ({ request, project_hint }) => ({
+    content: [
+      {
+        type: "text" as const,
+        text: await hubTools.classifyTicket(hub, request, project_hint),
+      },
+    ],
+  })
 );
 
 async function main() {
