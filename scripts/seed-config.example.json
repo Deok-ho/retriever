@@ -1,0 +1,39 @@
+{
+  "_comment": "Copy this to scripts/local/seed-config.json and edit. scripts/local/ is gitignored.",
+  "vault_coding": "/absolute/path/to/your/vault/coding/area",
+  "projects": [
+    {
+      "project_id": "example_project",
+      "status": "active",
+      "health": "green",
+      "priority": "high",
+      "phase": "phase1",
+      "repo_path": "/absolute/path/to/your/repo",
+      "harness_project": "example_project",
+      "purpose": "your_long_term_purpose",
+      "goal": "your_short_term_goal",
+      "context_budget": 80000,
+      "next_task_id": "first_task"
+    }
+  ],
+  "ticket_relpaths": [
+    "_tasks/example_project/first_task/ticket.md"
+  ],
+  "ticket_paths": [
+    "/absolute/path/to/an/external/ticket.md"
+  ],
+  "attachments": [
+    {
+      "project_id": "example_project",
+      "task_id": "first_task",
+      "url": "https://example.com/reference",
+      "note": "Reference document for first_task"
+    }
+  ],
+  "mark_criteria_done": [
+    {
+      "project_id": "example_project",
+      "task_id": "first_task"
+    }
+  ]
+}

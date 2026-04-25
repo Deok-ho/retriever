@@ -14,8 +14,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 
-const STORE = process.env.RTV_STORE_PATH || "C:/MyArchive/MyArchive/91_Retriever-Store";
-const DEVICE = process.env.RTV_DEVICE_NAME || "ASUS_WIN01";
+const STORE = process.env.RTV_STORE_PATH;
+if (!STORE) {
+  console.error("RTV_STORE_PATH is required. Example: export RTV_STORE_PATH=/path/to/91_Retriever-Store");
+  process.exit(1);
+}
+const DEVICE = process.env.RTV_DEVICE_NAME || os.hostname();
 const args = process.argv.slice(2);
 const targetProject = args.includes("--project") ? args[args.indexOf("--project") + 1] : null;
 const ollamaOnly = args.includes("--ollama-only");
