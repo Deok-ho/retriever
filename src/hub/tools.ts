@@ -5,7 +5,12 @@ import type {
   UpsertProjectInput,
   TicketStatus,
   Attachment,
+  Ticket,
 } from "../db/types.js";
+import {
+  renderPortfolioBoard,
+  renderProjectBoard,
+} from "../projection/templates.js";
 
 // === Project tools ===
 
@@ -187,4 +192,28 @@ export async function classifyTicket(
     ...r.data.completion_criteria.map((c) => `    - ${c}`),
   ];
   return lines.join("\n");
+}
+
+// === Board renderer ===
+// Gemma4 narrative integration is deferred — current adapter expects weekly
+// status transitions which we don't yet aggregate. Board rendering returns
+// the structural markdown only.
+
+export async function renderBoard(
+  hub: HubService,
+  opts: { project_id?: string; narrative?: boolean }
+): Promise<string> {
+  if (opts.project_id) {
+    const project = hub.projects.get(opts.project_id);
+    if (!project) return `프로젝트 없음: ${opts.project_id}`;
+    const tickets = hub.tickets.list({ project_id: opts.project_id });
+    return renderProjectBoard(project, tickets, null);
+  }
+
+  const projects = hub.projects.list();
+  const ticketsByProject = new Map<string, Ticket[]>();
+  for (const p of projects) {
+    ticketsByProject.set(p.project_id, hub.tickets.list({ project_id: p.project_id }));
+  }
+  return renderPortfolioBoard(projects, ticketsByProject, null);
 }
