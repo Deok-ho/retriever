@@ -121,4 +121,87 @@ export interface ToolAdapter {
 export interface RtvConfig {
   storePath: string;
   deviceName: string;
+  gemma4?: Gemma4Config;
+}
+
+// === Gemma4 Adapter ===
+export interface Gemma4Config {
+  enabled: boolean;
+  url: string;
+  model: string;
+  timeoutMs: number;
+}
+
+export type Gemma4Result<T> =
+  | { ok: true; data: T; raw: string }
+  | { ok: false; error: string };
+
+export type TaskType = "구현" | "리서치" | "문서" | "리뷰";
+export type Priority = "high" | "med" | "low";
+
+export interface ClassifyTicketInput {
+  request: string;
+  projectHint?: string;
+}
+export interface ClassifyTicketOutput {
+  task_type: TaskType;
+  priority: Priority;
+  completion_criteria: string[];
+  summary: string;
+}
+
+export interface VerifyCompletionInput {
+  ticketBody: string;
+  completionCriteria: string[];
+  recentActivity?: string;
+}
+export interface VerifyCompletionOutput {
+  completed: boolean;
+  missing: string[];
+  rationale: string;
+}
+
+export interface DiagnoseStalledInput {
+  ticketBody: string;
+  stalledSince: string;
+  recentActivity?: string;
+}
+export interface DiagnoseStalledOutput {
+  reason: "blocked" | "deprioritized" | "abandoned";
+  rationale: string;
+}
+
+export interface DuplicateCandidate {
+  task_id: string;
+  summary: string;
+}
+export interface FindDuplicatesInput {
+  draftSummary: string;
+  candidates: DuplicateCandidate[];
+}
+export interface FindDuplicatesOutput {
+  matches: { task_id: string; similarity: number; reason: string }[];
+}
+
+export interface AttachmentInput {
+  type: string;
+  path: string;
+  content: string;
+}
+export interface SummarizeAttachmentsInput {
+  taskSummary: string;
+  attachments: AttachmentInput[];
+}
+export interface SummarizeAttachmentsOutput {
+  summary: string;
+}
+
+export interface BoardNarrativeInput {
+  weekRange: { start: string; end: string };
+  statusTransitions: string[];
+  stalledTickets: string[];
+  completedTickets: string[];
+}
+export interface BoardNarrativeOutput {
+  narrative: string;
 }

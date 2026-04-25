@@ -1,6 +1,6 @@
 import * as os from "node:os";
 import * as path from "node:path";
-import type { RtvConfig } from "./types.js";
+import type { RtvConfig, Gemma4Config } from "./types.js";
 
 export function loadConfig(): RtvConfig {
   const storePath =
@@ -8,7 +8,16 @@ export function loadConfig(): RtvConfig {
     path.join(os.homedir(), ".retriever", "store");
   const deviceName = process.env.RTV_DEVICE_NAME ?? os.hostname();
 
-  return { storePath, deviceName };
+  return { storePath, deviceName, gemma4: loadGemma4Config() };
+}
+
+export function loadGemma4Config(): Gemma4Config {
+  const enabledRaw = process.env.RTV_GEMMA4_ENABLED;
+  const enabled = enabledRaw === undefined ? true : enabledRaw === "1" || enabledRaw === "true";
+  const url = process.env.OLLAMA_URL ?? "http://localhost:11434";
+  const model = process.env.OLLAMA_MODEL ?? "gemma4:26b-a4b-it-q8_0";
+  const timeoutMs = Number(process.env.OLLAMA_TIMEOUT_MS ?? 30000);
+  return { enabled, url, model, timeoutMs };
 }
 
 export function paths(config: RtvConfig) {

@@ -3,11 +3,12 @@
  * Session Mining — Phase A: 모든 세션에서 경량 인덱스 추출
  *
  * 사용법:
- *   node scripts/mine-sessions.mjs                     # 전체 실행
+ *   node scripts/mine-sessions.mjs                     # 전체 실행 (Phase A)
  *   node scripts/mine-sessions.mjs --project retriever  # 특정 프로젝트만
- *   node scripts/mine-sessions.mjs --ollama             # Phase B: Ollama로 패턴 추출
+ *   node scripts/mine-sessions.mjs --ollama             # Phase A + B
+ *   node scripts/mine-sessions.mjs --ollama-only        # Phase B만 (기존 인덱스 재사용)
  *
- * env: RTV_STORE_PATH, RTV_DEVICE_NAME
+ * env: RTV_STORE_PATH, RTV_DEVICE_NAME, OLLAMA_URL, OLLAMA_MODEL
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -17,7 +18,8 @@ const STORE = process.env.RTV_STORE_PATH || "C:/MyArchive/MyArchive/91_Retriever
 const DEVICE = process.env.RTV_DEVICE_NAME || "ASUS_WIN01";
 const args = process.argv.slice(2);
 const targetProject = args.includes("--project") ? args[args.indexOf("--project") + 1] : null;
-const useOllama = args.includes("--ollama");
+const ollamaOnly = args.includes("--ollama-only");
+const useOllama = ollamaOnly || args.includes("--ollama");
 
 const claudeProjects = path.join(os.homedir(), ".claude", "projects");
 
@@ -136,72 +138,76 @@ function extractSessionIndex(jsonlPath) {
 }
 
 // Main
-console.log("=== Session Mining Phase A ===\n");
-
-let totalSessions = 0;
-let totalIndexed = 0;
-
 const projectsToProcess = targetProject ? [targetProject] : (() => {
   try { return fs.readdirSync(devicesDir).filter(d => {
     return fs.statSync(path.join(devicesDir, d)).isDirectory() && d !== "." && d !== "..";
   }); } catch { return []; }
 })();
 
-for (const rtvName of projectsToProcess) {
-  const claudeIds = rtvToClaudeMap[rtvName];
-  if (!claudeIds || claudeIds.length === 0) continue;
+if (ollamaOnly) {
+  console.log("=== Session Mining — Phase A 스킵 (--ollama-only) ===\n");
+} else {
+  console.log("=== Session Mining Phase A ===\n");
 
-  const indexDir = path.join(devicesDir, rtvName, "sessions");
-  fs.mkdirSync(indexDir, { recursive: true });
+  let totalSessions = 0;
+  let totalIndexed = 0;
 
-  const allIndices = [];
+  for (const rtvName of projectsToProcess) {
+    const claudeIds = rtvToClaudeMap[rtvName];
+    if (!claudeIds || claudeIds.length === 0) continue;
 
-  for (const claudeId of claudeIds) {
-    const claudeDir = path.join(claudeProjects, claudeId);
-    if (!fs.existsSync(claudeDir)) continue;
+    const indexDir = path.join(devicesDir, rtvName, "sessions");
+    fs.mkdirSync(indexDir, { recursive: true });
 
-    const jsonls = fs.readdirSync(claudeDir).filter((f) => f.endsWith(".jsonl"));
-    totalSessions += jsonls.length;
+    const allIndices = [];
 
-    for (const jsonl of jsonls) {
-      const sessionId = jsonl.replace(".jsonl", "");
-      const jsonlPath = path.join(claudeDir, jsonl);
-      const stat = fs.statSync(jsonlPath);
+    for (const claudeId of claudeIds) {
+      const claudeDir = path.join(claudeProjects, claudeId);
+      if (!fs.existsSync(claudeDir)) continue;
 
-      // Skip tiny sessions (<1KB)
-      if (stat.size < 1024) continue;
+      const jsonls = fs.readdirSync(claudeDir).filter((f) => f.endsWith(".jsonl"));
+      totalSessions += jsonls.length;
 
-      try {
-        const index = extractSessionIndex(jsonlPath);
-        if (index.message_count < 2) continue;
+      for (const jsonl of jsonls) {
+        const sessionId = jsonl.replace(".jsonl", "");
+        const jsonlPath = path.join(claudeDir, jsonl);
+        const stat = fs.statSync(jsonlPath);
 
-        allIndices.push({
-          session_id: sessionId,
-          size_kb: Math.round(stat.size / 1024),
-          ...index,
-        });
-        totalIndexed++;
-      } catch (err) {
-        console.error(`  ✗ ${sessionId}: ${err.message}`);
+        // Skip tiny sessions (<1KB)
+        if (stat.size < 1024) continue;
+
+        try {
+          const index = extractSessionIndex(jsonlPath);
+          if (index.message_count < 2) continue;
+
+          allIndices.push({
+            session_id: sessionId,
+            size_kb: Math.round(stat.size / 1024),
+            ...index,
+          });
+          totalIndexed++;
+        } catch (err) {
+          console.error(`  ✗ ${sessionId}: ${err.message}`);
+        }
       }
+    }
+
+    // Sort by time descending
+    allIndices.sort((a, b) => (b.start_time || "").localeCompare(a.start_time || ""));
+
+    // Save detailed index — 단, 빈 배열로 기존 sync된 인덱스를 덮어쓰지 않음
+    const indexPath = path.join(indexDir, "index-detailed.json");
+    if (allIndices.length > 0 || !fs.existsSync(indexPath)) {
+      fs.writeFileSync(indexPath, JSON.stringify(allIndices, null, 2), "utf-8");
+      console.log(`✓ ${rtvName}: ${allIndices.length} sessions indexed`);
+    } else {
+      console.log(`⊙ ${rtvName}: 이 디바이스에 세션 없음 → 기존 인덱스 유지`);
     }
   }
 
-  // Sort by time descending
-  allIndices.sort((a, b) => (b.start_time || "").localeCompare(a.start_time || ""));
-
-  // Save detailed index
-  fs.writeFileSync(
-    path.join(indexDir, "index-detailed.json"),
-    JSON.stringify(allIndices, null, 2),
-    "utf-8"
-  );
-
-  console.log(`✓ ${rtvName}: ${allIndices.length} sessions indexed`);
+  console.log(`\n총 ${totalSessions} 세션 스캔, ${totalIndexed} 인덱싱 완료`);
+  console.log(`저장: devices/${DEVICE}/{project}/sessions/index-detailed.json`);
 }
-
-console.log(`\n총 ${totalSessions} 세션 스캔, ${totalIndexed} 인덱싱 완료`);
-console.log(`저장: devices/${DEVICE}/{project}/sessions/index-detailed.json`);
 
 // Phase B: Ollama pattern extraction
 if (useOllama) {
