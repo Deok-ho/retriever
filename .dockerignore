@@ -1,0 +1,16 @@
+node_modules
+dist
+.rtv-hub
+.rtv-store
+.rtv-client
+docs
+docs-local
+.claude
+.git
+.gitignore
+.github
+*.log
+*.tsbuildinfo
+scripts/local
+scripts/seed-config.json
+coverage

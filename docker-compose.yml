@@ -1,0 +1,22 @@
+services:
+  retriever-hub:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: retriever-hub:dev
+    container_name: retriever-hub
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8731:8731"
+    volumes:
+      - rtv-hub-data:/data
+    environment:
+      - RTV_HUB_DIR=/data
+      - RTV_HUB_HOST=0.0.0.0
+      - RTV_HUB_PORT=8731
+      # Uncomment to require Bearer auth for non-loopback callers:
+      # - RTV_HUB_TOKEN=change-me
+
+volumes:
+  rtv-hub-data:
+    name: rtv-hub-data

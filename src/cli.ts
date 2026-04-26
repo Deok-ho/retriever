@@ -16,7 +16,7 @@ const HELP = `Retriever — cross-LLM context hub
 Usage:
   retriever                            stdio MCP server (default)
   retriever stdio                      explicit stdio MCP server
-  retriever hub start [--http] [--port N]
+  retriever hub start [--http] [--port N] [--host H]
                                        run hub server (stdio default; --http for Streamable HTTP)
   retriever hub seed [path/to/cfg]     load seed config into hub DB
   retriever hub sync [project_id]      project hub data → vault markdown
@@ -32,6 +32,7 @@ Environment:
   RTV_VAULT_PATH        vault projection root (e.g. /path/to/Coding)
   RTV_HUB_URL           hub HTTP endpoint for client (default: http://127.0.0.1:8731/mcp)
   RTV_HUB_PORT          hub HTTP port (default: 8731)
+  RTV_HUB_HOST          hub HTTP bind host (default: 127.0.0.1; use 0.0.0.0 in containers)
   RTV_HUB_TOKEN         optional bearer token for hub HTTP auth
 `;
 
@@ -104,6 +105,8 @@ async function runHubStart(args: string[]): Promise<number> {
   const useHttp = args.includes("--http");
   const portIdx = args.indexOf("--port");
   const port = portIdx >= 0 ? Number(args[portIdx + 1]) : Number(process.env.RTV_HUB_PORT ?? 8731);
+  const hostIdx = args.indexOf("--host");
+  const host = hostIdx >= 0 ? String(args[hostIdx + 1]) : process.env.RTV_HUB_HOST ?? "127.0.0.1";
 
   if (!useHttp) {
     return runStdioServer();
@@ -114,8 +117,15 @@ async function runHubStart(args: string[]): Promise<number> {
   const hub = new HubService();
   const projector = loadProjectorFromEnv(hub);
   const serverFactory = () => createMcpServer({ config, hub, projector, mode: "hub" });
-  await startHubHttpServer({ serverFactory, port, token: process.env.RTV_HUB_TOKEN });
-  // Keep process alive until signal
+  const token = process.env.RTV_HUB_TOKEN;
+
+  if (host !== "127.0.0.1" && host !== "::1" && host !== "localhost" && !token) {
+    process.stderr.write(
+      `[warn] hub bound to non-loopback ${host} without RTV_HUB_TOKEN — anyone reachable to this host can call tools.\n`
+    );
+  }
+
+  await startHubHttpServer({ serverFactory, port, host, token });
   return new Promise<number>((resolve) => {
     const shutdown = () => {
       hub.close();
