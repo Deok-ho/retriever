@@ -161,6 +161,20 @@ ASUS_WIN01 (Windows)              MAC_STUDIO (macOS)
 - **MAC_STUDIO**: 로컬 LLM으로 세션 마이닝 (API 비용 0)
 - **동기화**: Obsidian Sync (유료)
 
+## Vault Linter (M1)
+
+Obsidian 볼트의 프론트매터·백링크·태그·허브를 정리하는 AI 린터. 현재는 결정적 룰 6종 + 제안서 출력까지 구현. 상세 설계는 [`specs/vault-linter.md`](specs/vault-linter.md) 참고.
+
+```bash
+npm run build
+node scripts/vault-lint.mjs --vault <볼트 경로>
+# 결과: <볼트>/91_Retriever-Store/vault-lint/runs/<YYYY-MM-DD>/proposals.md
+```
+
+옵션: `--config <yaml>`, `--dry-run`, `--only fm/required,link/broken`
+
+구현된 룰: `fm/required`, `fm/tags-array`, `fm/updated-format`, `link/broken`(+`link/ambiguous`), `note/orphan`, `note/h1-mismatch`. 다음 단계(M2)에서 Ollama 요약·임베딩·허브 추천 추가 예정.
+
 ## 개발
 
 ```bash
