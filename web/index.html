@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<title>Retriever — Paperclip AI Agent</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<style>
+  html, body { background: #FAFAF7; color: #1A1A1A; }
+  body { font-family: "Inter", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+         font-feature-settings: "cv11", "ss01"; letter-spacing: -0.005em; }
+  .font-mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  @keyframes rtvPulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
+  *::-webkit-scrollbar { width: 10px; height: 10px; }
+  *::-webkit-scrollbar-thumb { background: #E0DDD3; border-radius: 5px; border: 2px solid #FAFAF7; }
+  *::-webkit-scrollbar-track { background: transparent; }
+
+  /* --- Responsive overlay (prototype was width=1440 fixed) --------------- */
+
+  /* Sidebar drawer behavior on narrow screens */
+  .rtv-sidebar { transition: transform 200ms ease-out; }
+  @media (max-width: 767px) {
+    .rtv-sidebar {
+      position: fixed; inset: 0 auto 0 0;
+      z-index: 60; width: 260px;
+      transform: translateX(-100%);
+      box-shadow: 0 0 0 1px #E8E6DE, 6px 0 24px rgba(0,0,0,0.08);
+    }
+    .rtv-sidebar.rtv-sidebar-open { transform: translateX(0); }
+    .rtv-sidebar-backdrop {
+      position: fixed; inset: 0; z-index: 55;
+      background: rgba(20,20,20,0.32);
+    }
+    .rtv-menu-button { display: inline-flex !important; }
+  }
+  @media (min-width: 768px) {
+    .rtv-menu-button { display: none !important; }
+    .rtv-sidebar-backdrop { display: none !important; }
+  }
+
+  /* Wide content (tables, grids) — allow horizontal scroll inside main */
+  main { overflow-x: hidden; }
+  main > div { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* On narrow screens, give content a touch more breathing room around edges */
+  @media (max-width: 767px) {
+    main > div { padding: 16px !important; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" src="retriever-data.jsx"></script>
+<script type="text/babel" src="retriever-ui.jsx"></script>
+<script type="text/babel" src="retriever-board.jsx"></script>
+<script type="text/babel" src="retriever-detail.jsx"></script>
+<script type="text/babel" src="retriever-drawer.jsx"></script>
+<script type="text/babel" src="retriever-schema.jsx"></script>
+<script type="text/babel" src="retriever-sessions.jsx"></script>
+<script type="text/babel" src="retriever-session-chat.jsx"></script>
+<script type="text/babel" src="retriever-drift.jsx"></script>
+<script type="text/babel" src="retriever-links.jsx"></script>
+<script type="text/babel" src="retriever-roadmap.jsx"></script>
+<script type="text/babel" src="retriever-plan.jsx"></script>
+<script type="text/babel" src="retriever-daemons.jsx"></script>
+<script type="text/babel" src="retriever-tickets.jsx"></script>
+<script type="text/babel" src="retriever-plan-view.jsx"></script>
+<script type="text/babel">
+function App() {
+  const [view, setView] = React.useState("tickets");
+  const [activeTicket, setActiveTicket] = React.useState("gemma4_adapter");
+  const [drawer, setDrawer] = React.useState(null);
+  const [sidebarOpen, setSidebarOpen] = React.useState(false);
+
+  const selectTicket = (id) => { setActiveTicket(id); setView("tickets"); };
+  const openAgent = (taskId, intent, context) => setDrawer({ taskId, intent: intent || "ask", context: context || {} });
+  const navigate = (id) => { setView(id); setSidebarOpen(false); };
+
+  React.useEffect(() => {
+    const h = (e) => {
+      if (e.key === "Escape") { setDrawer(null); setSidebarOpen(false); }
+    };
+    window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h);
+  }, []);
+
+  // Lock body scroll when sidebar drawer is open on narrow screens
+  React.useEffect(() => {
+    document.body.style.overflow = sidebarOpen ? "hidden" : "";
+    return () => { document.body.style.overflow = ""; };
+  }, [sidebarOpen]);
+
+  const navItems = [
+    { id: "tickets",   label: "Tickets",      icon: "▤", sub: "board / table / detail" },
+    { id: "plan",      label: "Project",      icon: "❒", sub: "milestones / gantt / pert / sessions" },
+    { id: "sessions",  label: "Sessions",     icon: "✦", sub: "LLM session captures" },
+    { id: "schema",    label: "Schema Map",   icon: "◇" },
+    { id: "drift",     label: "Config Drift", icon: "⚠" },
+    { id: "links",     label: "Link Graph",   icon: "◉" },
+    { id: "daemons",   label: "Daemons",      icon: "⎈" },
+  ];
+
+  return (
+    <div className="min-h-screen flex">
+      {/* Backdrop (mobile only, behind drawer) */}
+      {sidebarOpen && (
+        <div className="rtv-sidebar-backdrop" onClick={() => setSidebarOpen(false)}/>
+      )}
+
+      {/* Sidebar */}
+      <aside
+        className={`rtv-sidebar w-[220px] border-r flex-shrink-0 flex flex-col ${sidebarOpen ? "rtv-sidebar-open" : ""}`}
+        style={{ borderColor: "#E8E6DE", background: "#FDFCF7" }}>
+        <div className="px-4 py-4 border-b flex items-center justify-between" style={{ borderColor: "#E8E6DE" }}>
+          <div className="flex items-center gap-2">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <path d="M8 3 a4 4 0 0 1 8 0 v12 a3 3 0 0 1 -6 0 v-9 a2 2 0 0 1 4 0 v9" stroke="#C26F4A" strokeWidth="1.8" strokeLinecap="round" fill="none"/>
+            </svg>
+            <div>
+              <div className="text-[14px] font-semibold text-[#1A1A1A] leading-none">Retriever</div>
+              <div className="text-[10px] font-mono mt-0.5" style={{ color: "#8A8680" }}>Paperclip AI · local</div>
+            </div>
+          </div>
+          {/* Close button — mobile only */}
+          <button
+            onClick={() => setSidebarOpen(false)}
+            aria-label="Close menu"
+            className="rtv-menu-button items-center justify-center w-7 h-7 rounded hover:bg-[#F3F1EC] text-[#5C5A55]"
+            style={{ display: "none" }}>
+            ×
+          </button>
+        </div>
+
+        <nav className="flex-1 py-2">
+          {navItems.map(n => (
+            <button key={n.id} onClick={() => navigate(n.id)}
+              className="w-full flex items-center gap-3 px-4 py-2 text-[13px] text-left transition"
+              style={{
+                background: view === n.id ? "#FBEFE8" : "transparent",
+                color: view === n.id ? "#8F4E2C" : "#3A3A36",
+                borderLeft: view === n.id ? "2px solid #C26F4A" : "2px solid transparent",
+              }}>
+              <span className="font-mono text-[14px]">{n.icon}</span>
+              <div className="flex-1 min-w-0">
+                <div>{n.label}</div>
+                {n.sub && <div className="text-[10px] font-mono mt-0.5 truncate" style={{ color: view === n.id ? "#A88467" : "#A8A8A0" }}>{n.sub}</div>}
+              </div>
+            </button>
+          ))}
+        </nav>
+
+        <div className="p-3 border-t space-y-2" style={{ borderColor: "#E8E6DE" }}>
+          <div className="text-[10px] font-mono uppercase tracking-wider px-1" style={{ color: "#8A8680" }}>projects</div>
+          {PROJECTS.map(p => (
+            <div key={p.id} className="flex items-center justify-between px-2 py-1 rounded text-[12px] hover:bg-[#F3F1EC]">
+              <span className="flex items-center gap-2 font-mono" style={{ color: "#3A3A36" }}>
+                <HealthDot h={p.health}/>{p.id}
+              </span>
+              <span className="font-mono text-[10px]" style={{ color: "#8A8680" }}>{p.active}</span>
+            </div>
+          ))}
+          <div className="pt-2 flex items-center justify-between text-[10px] font-mono" style={{ color: "#8A8680" }}>
+            <span>gemma4 · idle</span>
+            <span style={{ color: "#5A8C6F" }}>● ready</span>
+          </div>
+        </div>
+      </aside>
+
+      {/* Main */}
+      <main className="flex-1 min-w-0">
+        <div className="h-11 border-b flex items-center justify-between px-3 sm:px-5 gap-2" style={{ borderColor: "#E8E6DE", background: "#FDFCF7" }}>
+          <div className="flex items-center gap-2 min-w-0">
+            {/* Hamburger — mobile only */}
+            <button
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open menu"
+              className="rtv-menu-button items-center justify-center w-8 h-8 rounded hover:bg-[#F3F1EC] text-[#5C5A55] font-mono"
+              style={{ display: "none" }}>
+              ☰
+            </button>
+            <div className="flex items-center gap-2 text-[11px] font-mono min-w-0 truncate" style={{ color: "#8A8680" }}>
+              <span className="truncate">vault://portfolio</span>
+              <span className="hidden sm:inline">·</span>
+              <span className="hidden sm:inline">{TODAY}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <button className="hidden sm:inline-flex px-2.5 py-1 rounded border text-[11px] font-mono items-center gap-1.5"
+                    style={{ borderColor: "#E8E6DE", background: "#FFFFFF", color: "#5C5A55" }}>
+              <span>⌘K</span><span>search</span>
+            </button>
+            <AIButton onClick={() => openAgent(activeTicket, "ask")}>
+              <span className="hidden sm:inline">Ask Gemma4</span>
+              <span className="sm:hidden">Ask</span>
+            </AIButton>
+          </div>
+        </div>
+
+        <div className="p-4 sm:p-6">
+          {view === "tickets"   && <TicketsView activeTicket={activeTicket} setActiveTicket={setActiveTicket} openAgent={openAgent}/>}
+          {view === "plan"      && <PlanWorkView openAgent={openAgent}/>}
+          {view === "sessions"  && <SessionBrowser openAgent={openAgent}/>}
+          {view === "schema"    && <SchemaMap/>}
+          {view === "drift"     && <ConfigDrift openAgent={openAgent}/>}
+          {view === "links"     && <LinkGraph/>}
+          {view === "daemons"   && <Daemons openAgent={openAgent}/>}
+        </div>
+      </main>
+
+      {drawer && <AgentDrawer {...drawer} onClose={() => setDrawer(null)}/>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>

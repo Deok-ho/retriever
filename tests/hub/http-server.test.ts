@@ -63,6 +63,46 @@ describe("Hub HTTP transport (Streamable HTTP)", () => {
     expect(body.ok).toBe(true);
   });
 
+  it("serves the web UI at /ui/index.html (Retriever HTML shell)", async () => {
+    const r = await fetch(`http://127.0.0.1:${port}/ui/index.html`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type") ?? "").toMatch(/text\/html/);
+    const body = await r.text();
+    // Sanity checks: shell mounts the React app + responsive viewport
+    expect(body).toContain('id="root"');
+    expect(body).toContain("retriever-data.jsx");
+    expect(body).toContain("device-width");
+    expect(body).toContain("rtv-sidebar");
+  });
+
+  it("serves /ui (no trailing slash) by falling back to index.html", async () => {
+    const r = await fetch(`http://127.0.0.1:${port}/ui`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type") ?? "").toMatch(/text\/html/);
+    const body = await r.text();
+    expect(body).toContain('id="root"');
+  });
+
+  it("serves JSX as text/javascript so Babel-standalone can transpile", async () => {
+    const r = await fetch(`http://127.0.0.1:${port}/ui/retriever-data.jsx`);
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type") ?? "").toMatch(/javascript/);
+    const body = await r.text();
+    expect(body).toContain("PROJECTS");
+    expect(body).toContain("TICKETS");
+  });
+
+  it("rejects path traversal attempts under /ui", async () => {
+    const r = await fetch(`http://127.0.0.1:${port}/ui/../package.json`);
+    // Either 403 (traversal caught) or 404 (URL normalized away). Both are acceptable
+    // — the contract is "package.json must NOT be served from /ui".
+    expect([403, 404]).toContain(r.status);
+    if (r.status === 200) {
+      const body = await r.text();
+      expect(body).not.toContain('"name": "retriever"');
+    }
+  });
+
   it("serves MCP tool list and ticket lookup over Streamable HTTP", async () => {
     const transport = new StreamableHTTPClientTransport(
       new URL(`http://127.0.0.1:${port}/mcp`)

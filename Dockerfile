@@ -27,6 +27,10 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/package.json ./
 COPY scripts/seed-hub.mjs scripts/seed-config.example.json ./scripts/
+COPY web ./web
+
+# Expose web UI dir to the hub via env (auto-detected, but explicit is clearer)
+ENV RTV_WEB_DIR=/app/web
 
 # Hub data lives in a volume (DB + attachments).
 ENV RTV_HUB_DIR=/data \

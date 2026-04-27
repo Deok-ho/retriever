@@ -33,6 +33,7 @@ Environment:
   RTV_HUB_URL           hub HTTP endpoint for client (default: http://127.0.0.1:8731/mcp)
   RTV_HUB_PORT          hub HTTP port (default: 8731)
   RTV_HUB_HOST          hub HTTP bind host (default: 127.0.0.1; use 0.0.0.0 in containers)
+  RTV_WEB_DIR           static web UI directory served at /ui/* (default: <repo>/web)
   RTV_HUB_TOKEN         optional bearer token for hub HTTP auth
 `;
 

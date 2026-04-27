@@ -34,6 +34,25 @@ function fail(msg) {
   process.exit(1);
 }
 
+async function verifyUi() {
+  const baseUrl = HUB_URL.replace(/\/mcp\/?$/, "");
+  const r = await fetch(`${baseUrl}/ui/index.html`);
+  if (!r.ok) fail(`ui/index.html http ${r.status}`);
+  const ct = r.headers.get("content-type") ?? "";
+  if (!ct.includes("text/html")) fail(`ui content-type unexpected: ${ct}`);
+  const body = await r.text();
+  if (!body.includes('id="root"')) fail("ui shell missing #root mount");
+  if (!body.includes("retriever-data.jsx")) fail("ui shell missing data script");
+  if (!body.includes("device-width")) fail("ui shell missing responsive viewport");
+  log("verified: web UI shell served from /ui/index.html");
+
+  const jsx = await fetch(`${baseUrl}/ui/retriever-data.jsx`);
+  if (!jsx.ok) fail(`ui jsx http ${jsx.status}`);
+  const jsxBody = await jsx.text();
+  if (!jsxBody.includes("PROJECTS")) fail("ui jsx missing PROJECTS export");
+  log("verified: web UI .jsx assets reachable");
+}
+
 async function waitForHealthz(timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -128,6 +147,10 @@ async function main() {
   log(`verified: ticket body intact (summary matches)`);
 
   await client.close();
+
+  // Web UI verification — container must serve the static prototype too.
+  await verifyUi();
+
   log("PASS");
 }
 
