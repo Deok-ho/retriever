@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import * as crypto from "node:crypto";
 import type {
   Harness,
   NormalizedEvent,
@@ -107,6 +108,26 @@ export class SessionRepo {
     const bytes_total = Buffer.byteLength(input.transcript_content, "utf8");
     const events_total = input.events.length;
 
+    // (Codex 주의급 #6) Server-side content_hash recompute. Caller may supply
+    // a hash for differential push optimization, but we never trust it as
+    // ground truth. Mismatches are logged (helps debug client bugs) but the
+    // server-computed hash always wins.
+    const computed = crypto
+      .createHash("sha256")
+      .update(input.transcript_content, "utf8")
+      .digest("hex");
+    if (input.content_hash && input.content_hash !== computed) {
+      try {
+        process.stderr.write(
+          `[retriever] mirror: content_hash mismatch for ${session_uid} ` +
+            `(client=${input.content_hash.slice(0, 8)}…, server=${computed.slice(0, 8)}…) — using server value\n`
+        );
+      } catch {
+        /* stderr unavailable in some test runtimes */
+      }
+    }
+    const trustedHash = computed;
+
     const tx = this.db.transaction(() => {
       const existing = this.db
         .prepare("SELECT commit_shas_json, created_at FROM sessions WHERE session_uid = ?")
@@ -168,7 +189,7 @@ export class SessionRepo {
              content_hash = excluded.content_hash,
              stored_at = excluded.stored_at`
         )
-        .run(session_uid, input.transcript_content, input.content_hash, now);
+        .run(session_uid, input.transcript_content, trustedHash, now);
 
       // Events: replace
       this.db

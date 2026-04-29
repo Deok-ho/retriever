@@ -106,7 +106,12 @@ describe("SessionRepo", () => {
           "SELECT content, content_hash FROM session_transcripts WHERE session_uid = ?"
         )
         .get(updated.session_uid) as { content: string; content_hash: string };
-      expect(trans.content_hash).toBe("h2");
+      // Codex 주의급 #6 — server recomputes; client's "h2" placeholder is overwritten
+      const expected = require("node:crypto")
+        .createHash("sha256")
+        .update("longer body", "utf8")
+        .digest("hex");
+      expect(trans.content_hash).toBe(expected);
       expect(trans.content).toBe("longer body");
       const eventCount = (
         db.prepare("SELECT COUNT(*) AS c FROM session_events").get() as {
@@ -227,7 +232,12 @@ describe("SessionRepo", () => {
         include_transcript: true,
         include_events: true,
       });
-      expect(full?.transcript?.content_hash).toBe("h1");
+      // Codex 주의급 #6 — server-computed hash, not client placeholder
+      const expectedHash = require("node:crypto")
+        .createHash("sha256")
+        .update('{"type":"user","timestamp":"2026-04-29T00:00:00Z"}', "utf8")
+        .digest("hex");
+      expect(full?.transcript?.content_hash).toBe(expectedHash);
       expect(full?.events).toHaveLength(1);
     });
 
