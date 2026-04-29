@@ -122,6 +122,13 @@ async function rtvFetchLiveSessionDetail(uid, opts = {}) {
   const params = new URLSearchParams();
   params.set("events", "1");
   if (opts.transcript) params.set("transcript", "1");
+  // Codex 주의급 #11 — server caps default at 500 events; UI explicitly asks
+  // for 1000 on first load (covers most sessions in one round-trip), and uses
+  // events_after_seq cursor for the rest.
+  params.set("events_limit", String(opts.events_limit ?? 1000));
+  if (typeof opts.events_after_seq === "number") {
+    params.set("events_after_seq", String(opts.events_after_seq));
+  }
   const url = `${RTV_API_BASE}/sessions/${encodeURIComponent(uid)}?${params}`;
   const r = await fetch(url, { headers: { Accept: "application/json" } });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);

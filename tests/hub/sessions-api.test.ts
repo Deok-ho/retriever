@@ -148,6 +148,23 @@ describe("HTTP /api/sessions* (read-only viewer)", () => {
     });
     expect(r.headers.get("x-request-id")).toBe(incoming);
   });
+
+  test("event pagination params propagated to repo (Codex 주의급 #11)", async () => {
+    const r = await get(
+      "/api/sessions/" +
+        encodeURIComponent("ms-m4x-001:claude_code:api-1") +
+        "?events_limit=1"
+    );
+    expect(r.status).toBe(200);
+    const body = r.body as {
+      events: { seq: number }[];
+      events_next_cursor: number | null;
+      events_total: number;
+    };
+    expect(body.events).toHaveLength(1);
+    expect(body.events_next_cursor).toBe(0); // first event seq=0, more available
+    expect(body.events_total).toBe(2); // sessions-api seeded 2 events
+  });
 });
 
 describe("HTTP /api/sessions/daily", () => {

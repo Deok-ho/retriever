@@ -370,9 +370,15 @@ async function serveApi(
     const m = p.match(/^\/api\/sessions\/([^/]+)$/);
     if (m) {
       const session_uid = decodeURIComponent(m[1]);
+      const after = q.get("events_after_seq");
+      const lim = q.get("events_limit");
       const r = hub.sessions.read(session_uid, {
         include_transcript: q.get("transcript") === "1" || q.get("transcript") === "true",
         include_events: q.get("events") !== "0" && q.get("events") !== "false",
+        events_after_seq:
+          after !== null && /^-?\d+$/.test(after) ? Number(after) : undefined,
+        events_limit:
+          lim !== null && /^\d+$/.test(lim) ? Number(lim) : undefined,
       });
       if (!r) return jsonRes(res, 404, { error: "not_found" });
       return jsonRes(res, 200, r);

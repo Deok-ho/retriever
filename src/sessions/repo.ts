@@ -53,12 +53,20 @@ export interface SearchHit {
 export interface SessionReadOptions {
   include_transcript?: boolean;
   include_events?: boolean;
+  /** Inclusive lower-bound on seq when paginating events (returns rows with seq > this). */
+  events_after_seq?: number;
+  /** Cap on number of events returned (default 500, max 5000). */
+  events_limit?: number;
 }
 
 export interface SessionRead {
   session: SessionRow;
   transcript?: SessionTranscriptRow;
   events?: SessionEventRow[];
+  /** When events are paginated, last seq returned; null when at end. */
+  events_next_cursor?: number | null;
+  /** Total events for this session (matches `session.events_total`). */
+  events_total?: number;
 }
 
 export interface FilesTouchedHit extends SessionRow {
@@ -285,11 +293,22 @@ export class SessionRepo {
         .get(session_uid) as SessionTranscriptRow;
     }
     if (opts.include_events) {
-      out.events = this.db
+      const limit = Math.max(1, Math.min(opts.events_limit ?? 500, 5000));
+      const after = typeof opts.events_after_seq === "number" ? opts.events_after_seq : -1;
+      const events = this.db
         .prepare(
-          "SELECT * FROM session_events WHERE session_uid = ? ORDER BY seq ASC"
+          `SELECT * FROM session_events
+           WHERE session_uid = ? AND seq > ?
+           ORDER BY seq ASC LIMIT ?`
         )
-        .all(session_uid) as SessionEventRow[];
+        .all(session_uid, after, limit) as SessionEventRow[];
+      out.events = events;
+      out.events_total = session.events_total;
+      // next_cursor = last seq if we filled the page (more may exist), else null
+      out.events_next_cursor =
+        events.length === limit && events.length > 0
+          ? events[events.length - 1].seq
+          : null;
     }
     return out;
   }

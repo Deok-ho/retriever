@@ -244,6 +244,42 @@ describe("SessionRepo", () => {
     test("returns null when session_uid unknown", () => {
       expect(repo.read("does:not:exist", {})).toBeNull();
     });
+
+    test("event pagination — Codex 주의급 #11", () => {
+      // Seed 25 events
+      const events = Array.from({ length: 25 }, (_, i) => ({
+        seq: i,
+        ts: `2026-04-30T00:00:${i.toString().padStart(2, "0")}Z`,
+        event_type: "user_msg" as const,
+        payload: { text: `m${i}` },
+      }));
+      const r = repo.mirror(makeMirrorInput({ events, native_id: "pg" }));
+      // Page 1 — limit 10
+      const p1 = repo.read(r.session_uid, { include_events: true, events_limit: 10 })!;
+      expect(p1.events).toHaveLength(10);
+      expect(p1.events![0].seq).toBe(0);
+      expect(p1.events![9].seq).toBe(9);
+      expect(p1.events_next_cursor).toBe(9);
+      expect(p1.events_total).toBe(25);
+      // Page 2 — after seq 9
+      const p2 = repo.read(r.session_uid, {
+        include_events: true,
+        events_limit: 10,
+        events_after_seq: 9,
+      })!;
+      expect(p2.events).toHaveLength(10);
+      expect(p2.events![0].seq).toBe(10);
+      expect(p2.events_next_cursor).toBe(19);
+      // Page 3 — after seq 19, only 5 remain → next_cursor null
+      const p3 = repo.read(r.session_uid, {
+        include_events: true,
+        events_limit: 10,
+        events_after_seq: 19,
+      })!;
+      expect(p3.events).toHaveLength(5);
+      expect(p3.events![4].seq).toBe(24);
+      expect(p3.events_next_cursor).toBeNull();
+    });
   });
 
   describe("search (FTS5)", () => {
