@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { HubService } from "./service.js";
+import { logger, generateRequestId } from "../utils/logger.js";
 
 export interface HubHttpOptions {
   /**
@@ -123,6 +124,26 @@ export async function startHubHttpServer(opts: HubHttpOptions): Promise<HubHttpH
   };
 
   const httpServer = http.createServer(async (req, res) => {
+    // (Codex 주의급 #7) Per-request id + structured access logging.
+    const startedAt = Date.now();
+    const incomingReqId = req.headers["x-request-id"];
+    const reqId =
+      typeof incomingReqId === "string" && /^[A-Za-z0-9_-]{4,64}$/.test(incomingReqId)
+        ? incomingReqId
+        : generateRequestId();
+    res.setHeader("X-Request-Id", reqId);
+    res.on("finish", () => {
+      const dur = Date.now() - startedAt;
+      const level = res.statusCode >= 500 ? "error" : res.statusCode >= 400 ? "warn" : "info";
+      logger[level]("hub_http_access", {
+        req_id: reqId,
+        method: req.method,
+        path: req.url?.split("?")[0],
+        status: res.statusCode,
+        dur_ms: dur,
+      });
+    });
+
     try {
       const url = new URL(req.url ?? "/", `http://${host}:${opts.port}`);
 
@@ -238,6 +259,11 @@ export async function startHubHttpServer(opts: HubHttpOptions): Promise<HubHttpH
       await transport.handleRequest(req, res);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      logger.error("hub_http_unhandled", {
+        req_id: reqId,
+        path: req.url?.split("?")[0],
+        err,
+      });
       if (!res.headersSent) {
         res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
         res.end(
@@ -261,6 +287,7 @@ export async function startHubHttpServer(opts: HubHttpOptions): Promise<HubHttpH
   const addr = httpServer.address();
   const actualPort = typeof addr === "object" && addr ? addr.port : opts.port;
   const url = `http://${host}:${actualPort}${basePath}`;
+  logger.info("hub_http_listen", { host, port: actualPort, base_path: basePath, requires_auth: requireAuth });
   process.stderr.write(`retriever hub HTTP listening on ${url}\n`);
 
   return {

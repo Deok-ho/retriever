@@ -132,6 +132,22 @@ describe("HTTP /api/sessions* (read-only viewer)", () => {
     const r = await get("/api/sessions/search");
     expect(r.status).toBe(400);
   });
+
+  test("every response includes X-Request-Id (Codex 주의급 #7)", async () => {
+    const r = await fetch(`http://127.0.0.1:${handle.port}/api/sessions`);
+    expect(r.status).toBe(200);
+    const reqId = r.headers.get("x-request-id");
+    expect(reqId).toBeTruthy();
+    expect(reqId!).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  test("inbound X-Request-Id is echoed back when valid", async () => {
+    const incoming = "trace-abc-12345678";
+    const r = await fetch(`http://127.0.0.1:${handle.port}/api/sessions`, {
+      headers: { "X-Request-Id": incoming },
+    });
+    expect(r.headers.get("x-request-id")).toBe(incoming);
+  });
 });
 
 describe("HTTP /api/sessions/daily", () => {
