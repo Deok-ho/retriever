@@ -321,9 +321,14 @@ function SessionBrowser({ openAgent }) {
     return () => { cancelled = true; clearTimeout(t); };
   }, [filter.q]);
 
-  // Pick data source: live if any, else mock
-  const useLive = liveSessions && liveSessions.length > 0;
-  const ALL_SESSIONS = useLive ? liveSessions : SB_SESSIONS;
+  // Codex iter5 #3 fix — distinguish:
+  //   "live" (API ok, ≥1 row) | "empty" (API ok, 0 rows in this window)
+  //   "loading" (still fetching) | "error"/"mock" (API unreachable → demo)
+  // useLive: render live data path even when 0 rows. Mock fallback ONLY when API unreachable.
+  const apiReachable = liveStatus === "live" || liveStatus === "empty";
+  const useLive = apiReachable;
+  const ALL_SESSIONS = useLive ? (liveSessions || []) : SB_SESSIONS;
+  const showMockBanner = !useLive && liveStatus !== "loading";
 
   // When the user selects a session in live mode, fetch detail and merge events.
   React.useEffect(() => {
@@ -448,6 +453,16 @@ function SessionBrowser({ openAgent }) {
         </div>
       </div>
 
+      {/* Demo-mode banner — only when API is unreachable, never confuse user with mock data on a live deployment */}
+      {showMockBanner && (
+        <div className="mb-3 rounded-md border px-3 py-2 text-[12px] flex items-center gap-2"
+             style={{ borderColor: "#F0C9C0", background: "#FBEAE6", color: "#A83E3E" }}>
+          <span>●</span>
+          <span><strong>데모 모드</strong> — hub /api/sessions에 접근할 수 없어 mock 데이터를 보여줍니다.</span>
+          <span className="ml-auto text-[11px] font-mono" style={{ color: "#8A8680" }}>retriever client capture-sessions 후 hub start --http</span>
+        </div>
+      )}
+
       {/* Time window chips — primary affordance: "오늘 한 일" 한 번에 보기 */}
       {useLive && (
         <div className="mb-3 flex items-center gap-1.5 flex-wrap">
@@ -548,7 +563,11 @@ function SessionBrowser({ openAgent }) {
           <ColHeader>sessions · {visibleSessions.length}</ColHeader>
           <div className="p-1.5 max-h-[760px] overflow-auto">
             {visibleSessions.length === 0 && (
-              <div className="px-3 py-8 text-center text-[11px] font-mono" style={{ color: "#8A8680" }}>no sessions match</div>
+              <div className="px-3 py-8 text-center text-[11px] font-mono" style={{ color: "#8A8680" }}>
+                {useLive && ALL_SESSIONS.length === 0
+                  ? `이 시간 윈도(${timeWin})에 ${searchHits ? "매치되는 " : ""}세션 없음`
+                  : "no sessions match"}
+              </div>
             )}
             {visibleSessions.map(s => {
               const h = HARNESS_STYLE[s.harness];
@@ -593,7 +612,7 @@ function SessionBrowser({ openAgent }) {
                   <div className="mt-1 flex items-center gap-2 text-[10px] font-mono flex-wrap" style={{ color: "#8A8680" }}>
                     <span>{s.events} events</span>
                     <span>· active {fmtDur(s.active_seconds)}</span>
-                    {s.commit_shas.length > 0 && <span>· commits {s.commit_shas.length}</span>}
+                    {(s.commit_shas || []).length > 0 && <span>· commits {(s.commit_shas || []).length}</span>}
                     {s.errors > 0 && <span style={{ color: "#A83E3E" }}>· {s.errors} err</span>}
                   </div>
                 </button>
@@ -783,7 +802,7 @@ function SessionDetail({ s, onCopy, copied, openAgent, onFocus }) {
                 <span>열기</span><span>⤢</span>
               </button>
             )}
-            <button onClick={() => openAgent(s.tickets[0]?.ticket || "gemma4_adapter", "ask", { session_uid: s.uid })}
+            <button onClick={() => openAgent((s.tickets || [])[0]?.ticket || "gemma4_adapter", "ask", { session_uid: s.uid })}
                     className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-[12px]"
                     style={{ background: "#FBEFE8", color: "#8F4E2C", border: "1px solid #EDD4C2" }}>
               ✦ ask gemma4
@@ -797,7 +816,7 @@ function SessionDetail({ s, onCopy, copied, openAgent, onFocus }) {
           <Meta k="last active" v={s.last_active}/>
           <Meta k="active time" v={fmtDur(s.active_seconds)}/>
           <Meta k="events"      v={s.events}/>
-          <Meta k="commits"     v={s.commit_shas.length === 0 ? "—" : s.commit_shas.join(" · ")}/>
+          <Meta k="commits"     v={(s.commit_shas || []).length === 0 ? "—" : (s.commit_shas || []).join(" · ")}/>
           <Meta k="errors"      v={s.errors === 0 ? "0" : <span style={{ color: "#A83E3E" }}>{s.errors}</span>}/>
         </div>
       </div>
@@ -859,14 +878,21 @@ function SessionDetail({ s, onCopy, copied, openAgent, onFocus }) {
           <SessionChat s={s} onCopy={onCopy} copied={copied}/>
         )}
 
-        {tab === "tools" && (
+        {tab === "tools" && (() => {
+          const tools = s.tools || {};
+          const files = s.files || [];
+          const tickets = s.tickets || [];
+          const toolEntries = Object.entries(tools);
+          const max = toolEntries.length ? Math.max(...Object.values(tools)) : 1;
+          return (
           <div className="grid grid-cols-2 gap-4">
             <div>
               <div className="text-[11px] font-mono uppercase tracking-wider mb-2" style={{ color: "#8A8680" }}>tool_call_counts</div>
               <div className="space-y-1.5">
-                {Object.entries(s.tools).map(([k, v]) => {
-                  const max = Math.max(...Object.values(s.tools));
-                  return (
+                {toolEntries.length === 0 && (
+                  <div className="text-[11px] font-mono" style={{ color: "#8A8680" }}>(no tool calls)</div>
+                )}
+                {toolEntries.map(([k, v]) => (
                     <div key={k} className="flex items-center gap-3">
                       <span className="text-[12px] font-mono text-[#1A1A1A] w-24 flex-shrink-0">{k}</span>
                       <div className="flex-1 h-3 rounded" style={{ background: "#F3F1EC" }}>
@@ -874,24 +900,26 @@ function SessionDetail({ s, onCopy, copied, openAgent, onFocus }) {
                       </div>
                       <span className="text-[11px] font-mono w-8 text-right" style={{ color: "#5C5A55" }}>{v}</span>
                     </div>
-                  );
-                })}
+                  ))}
               </div>
             </div>
             <div>
-              <div className="text-[11px] font-mono uppercase tracking-wider mb-2" style={{ color: "#8A8680" }}>files_touched · {s.files.length}</div>
+              <div className="text-[11px] font-mono uppercase tracking-wider mb-2" style={{ color: "#8A8680" }}>files_touched · {files.length}</div>
               <div className="space-y-1">
-                {s.files.map(f => (
+                {files.length === 0 && (
+                  <div className="text-[11px] font-mono" style={{ color: "#8A8680" }}>(no file edits captured)</div>
+                )}
+                {files.map(f => (
                   <div key={f} className="flex items-center gap-2 px-2 py-1 rounded" style={{ background: "#FAFAF7" }}>
                     <span className="text-[10px] font-mono" style={{ color: "#A88467" }}>◇</span>
                     <span className="text-[12px] font-mono text-[#1A1A1A] truncate">{f}</span>
                   </div>
                 ))}
               </div>
-              {s.tickets.length > 0 && (
+              {tickets.length > 0 && (
                 <>
                   <div className="text-[11px] font-mono uppercase tracking-wider mt-4 mb-2" style={{ color: "#8A8680" }}>tickets_mentioned</div>
-                  {s.tickets.map(t => (
+                  {tickets.map(t => (
                     <div key={t.ticket} className="flex items-center gap-2 px-2 py-1 rounded" style={{ background: "#FBEFE8" }}>
                       <span className="text-[12px] font-mono" style={{ color: "#8F4E2C" }}>#{t.ticket}</span>
                       <span className="text-[10px] font-mono ml-auto" style={{ color: "#8A8680" }}>{t.project} · conf {t.confidence.toFixed(2)} · {t.confidence >= 0.8 ? "auto" : "candidate"}</span>
@@ -901,7 +929,8 @@ function SessionDetail({ s, onCopy, copied, openAgent, onFocus }) {
               )}
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {tab === "meta" && (
           <div className="grid grid-cols-2 gap-4 text-[12px] font-mono">

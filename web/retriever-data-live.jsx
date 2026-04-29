@@ -37,8 +37,9 @@ function rtvShapeRow(s) {
     summary: "", // populated lazily on click via detail fetch
     bytes: s.bytes_total || 0,
     events: s.events_total || 0,
-    files: [], // populated by /api/sessions/:uid?events=1
-    tools: {},
+    files: [],     // populated lazily from /api/sessions/:uid?events=1
+    tools: {},     // populated lazily — keep object so Object.entries() never throws
+    tickets: [],   // mock-only concept (auto-link is post-MVP); empty array on live rows
     commit_shas,
     active_seconds: 0,
     errors: 0,

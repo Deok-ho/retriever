@@ -53,10 +53,48 @@ export async function startHubHttpServer(opts: HubHttpOptions): Promise<HubHttpH
   const host = opts.host ?? "127.0.0.1";
   const basePath = opts.basePath ?? "/mcp";
   const uiDir = resolveUiDir(opts.uiDir);
+  const requireAuth = !isLoopback(host);
+
+  // Hard-fail at startup if exposed beyond loopback without a token.
+  // (Codex iter5 review #1 — auth bypass was a blocker for commercial-grade.)
+  if (requireAuth && !opts.token) {
+    throw new Error(
+      `Refusing to start hub HTTP on non-loopback host ${host} without RTV_HUB_TOKEN. ` +
+        `Set RTV_HUB_TOKEN to a strong secret, or bind to 127.0.0.1 / ::1 / localhost.`
+    );
+  }
+
+  const isAuthorized = (req: http.IncomingMessage): boolean => {
+    if (!requireAuth) return true; // loopback: trust the host
+    const headerAuth = req.headers["authorization"];
+    if (typeof headerAuth === "string" && headerAuth === `Bearer ${opts.token}`) return true;
+    // Fallback: ?token=… query param so PWA / mobile bookmarks (which can't set
+    // headers) still work. Not stronger than a bearer header — same secret.
+    try {
+      const u = new URL(req.url ?? "/", `http://${host}:${opts.port}`);
+      const q = u.searchParams.get("token");
+      if (typeof q === "string" && q === opts.token) return true;
+    } catch {
+      /* ignore */
+    }
+    return false;
+  };
 
   const httpServer = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? "/", `http://${host}:${opts.port}`);
+
+      // Single global auth gate — applied to every path except /healthz.
+      // /healthz must remain unauthenticated for orchestrators (Docker, Tailscale,
+      // load balancers) — it returns no session data.
+      if (url.pathname !== "/healthz" && !isAuthorized(req)) {
+        res.writeHead(401, {
+          "Content-Type": "text/plain; charset=utf-8",
+          "WWW-Authenticate": "Bearer realm=\"retriever-hub\"",
+        });
+        res.end("unauthorized");
+        return;
+      }
 
       if (url.pathname === "/healthz") {
         res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
@@ -80,16 +118,6 @@ export async function startHubHttpServer(opts: HubHttpOptions): Promise<HubHttpH
         res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
         res.end("not found");
         return;
-      }
-
-      // Token check (only enforced when token set AND host is non-loopback)
-      if (opts.token && !isLoopback(host)) {
-        const auth = req.headers["authorization"];
-        if (auth !== `Bearer ${opts.token}`) {
-          res.writeHead(401, { "Content-Type": "text/plain; charset=utf-8" });
-          res.end("unauthorized");
-          return;
-        }
       }
 
       if (req.method === "GET" || req.method === "DELETE") {

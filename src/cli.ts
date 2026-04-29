@@ -134,12 +134,8 @@ async function runHubStart(args: string[]): Promise<number> {
   const serverFactory = () => createMcpServer({ config, hub, projector, mode: "hub" });
   const token = process.env.RTV_HUB_TOKEN;
 
-  if (host !== "127.0.0.1" && host !== "::1" && host !== "localhost" && !token) {
-    process.stderr.write(
-      `[warn] hub bound to non-loopback ${host} without RTV_HUB_TOKEN — anyone reachable to this host can call tools.\n`
-    );
-  }
-
+  // startHubHttpServer hard-fails when bound non-loopback without a token —
+  // the previous soft warn was insufficient (Codex iter5 #1 blocker fix).
   await startHubHttpServer({ serverFactory, port, host, token, hub });
   return new Promise<number>((resolve) => {
     const shutdown = () => {
