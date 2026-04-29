@@ -113,4 +113,89 @@ export const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_events_ticket ON device_events(project_id, task_id);
     `,
   },
+  {
+    version: 2,
+    name: "sessions_v1",
+    sql: `
+      CREATE TABLE IF NOT EXISTS sessions (
+        session_uid       TEXT PRIMARY KEY,
+        machine_id        TEXT NOT NULL,
+        harness           TEXT NOT NULL CHECK (harness IN ('claude_code','codex','gemini','qwen','other')),
+        native_id         TEXT NOT NULL,
+        project_id        TEXT REFERENCES projects(project_id) ON DELETE SET NULL,
+        cwd_at_start      TEXT,
+        started_at        TEXT NOT NULL,
+        last_active_at    TEXT NOT NULL,
+        ended_at          TEXT,
+        status            TEXT NOT NULL DEFAULT 'active'
+                            CHECK (status IN ('active','idle','archived','cleared')),
+        commit_shas_json  TEXT NOT NULL DEFAULT '[]',
+        bytes_total       INTEGER NOT NULL DEFAULT 0,
+        events_total      INTEGER NOT NULL DEFAULT 0,
+        created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (machine_id, harness, native_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_sessions_project    ON sessions(project_id);
+      CREATE INDEX IF NOT EXISTS idx_sessions_machine    ON sessions(machine_id);
+      CREATE INDEX IF NOT EXISTS idx_sessions_active_at  ON sessions(last_active_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_sessions_harness    ON sessions(harness);
+
+      CREATE TABLE IF NOT EXISTS session_transcripts (
+        session_uid   TEXT PRIMARY KEY REFERENCES sessions(session_uid) ON DELETE CASCADE,
+        content       TEXT NOT NULL,
+        content_hash  TEXT NOT NULL,
+        format        TEXT NOT NULL DEFAULT 'jsonl-v1',
+        stored_at     TEXT NOT NULL
+      );
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS session_transcripts_fts USING fts5(
+        session_uid UNINDEXED,
+        content,
+        tokenize = 'unicode61 remove_diacritics 2'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS session_transcripts_ai
+        AFTER INSERT ON session_transcripts BEGIN
+          INSERT INTO session_transcripts_fts (session_uid, content)
+            VALUES (new.session_uid, new.content);
+        END;
+      CREATE TRIGGER IF NOT EXISTS session_transcripts_ad
+        AFTER DELETE ON session_transcripts BEGIN
+          DELETE FROM session_transcripts_fts WHERE session_uid = old.session_uid;
+        END;
+      CREATE TRIGGER IF NOT EXISTS session_transcripts_au
+        AFTER UPDATE ON session_transcripts BEGIN
+          DELETE FROM session_transcripts_fts WHERE session_uid = old.session_uid;
+          INSERT INTO session_transcripts_fts (session_uid, content)
+            VALUES (new.session_uid, new.content);
+        END;
+
+      CREATE TABLE IF NOT EXISTS session_events (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_uid   TEXT NOT NULL REFERENCES sessions(session_uid) ON DELETE CASCADE,
+        seq           INTEGER NOT NULL,
+        ts            TEXT NOT NULL,
+        event_type    TEXT NOT NULL CHECK (event_type IN
+                        ('user_msg','assistant_msg','tool_use','tool_result',
+                         'thinking','system','meta')),
+        tool_name     TEXT,
+        payload_json  TEXT NOT NULL,
+        is_error      INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_events_session   ON session_events(session_uid, seq);
+      CREATE INDEX IF NOT EXISTS idx_events_tool_name ON session_events(tool_name) WHERE tool_name IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS session_files_touched (
+        session_uid    TEXT NOT NULL REFERENCES sessions(session_uid) ON DELETE CASCADE,
+        file_path      TEXT NOT NULL,
+        first_touch_at TEXT NOT NULL,
+        last_touch_at  TEXT NOT NULL,
+        touch_count    INTEGER NOT NULL DEFAULT 1,
+        primary_op     TEXT NOT NULL CHECK (primary_op IN ('read','edit','write','delete','rename')),
+        PRIMARY KEY (session_uid, file_path)
+      );
+      CREATE INDEX IF NOT EXISTS idx_files_touched ON session_files_touched(file_path);
+    `,
+  },
 ];

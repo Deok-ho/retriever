@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { HubService } from "./service.js";
 
 export interface HubHttpOptions {
   /**
@@ -25,6 +26,11 @@ export interface HubHttpOptions {
    *   - <cwd>/web
    */
   uiDir?: string;
+  /**
+   * Optional shared hub instance. If supplied, /api/* JSON routes are mounted
+   * (read-only, for the web UI viewer). The hub is NOT closed by this server.
+   */
+  hub?: HubService;
 }
 
 export interface HubHttpHandle {
@@ -61,6 +67,12 @@ export async function startHubHttpServer(opts: HubHttpOptions): Promise<HubHttpH
       // Web UI static handler — /ui/* (and /ui or /ui/ → index.html)
       if (url.pathname === "/ui" || url.pathname === "/ui/" || url.pathname.startsWith("/ui/")) {
         await serveUi(req, res, url.pathname, uiDir);
+        return;
+      }
+
+      // JSON API for the web viewer (read-only). Only mounted when a hub is supplied.
+      if (opts.hub && url.pathname.startsWith("/api/")) {
+        await serveApi(req, res, url, opts.hub);
         return;
       }
 
@@ -150,6 +162,86 @@ export async function startHubHttpServer(opts: HubHttpOptions): Promise<HubHttpH
 
 function isLoopback(host: string): boolean {
   return host === "127.0.0.1" || host === "::1" || host === "localhost";
+}
+
+// === JSON API for the web viewer (read-only) ==========================
+
+async function serveApi(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  url: URL,
+  hub: HubService
+): Promise<void> {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    return jsonRes(res, 405, { error: "method_not_allowed" });
+  }
+  const p = url.pathname;
+  const q = url.searchParams;
+  try {
+    if (p === "/api/sessions") {
+      const rows = hub.sessions.list({
+        machine_id: q.get("machine_id") ?? undefined,
+        harness: (q.get("harness") as never) ?? undefined,
+        project_id: q.get("project_id") ?? undefined,
+        status: (q.get("status") as never) ?? undefined,
+        since: q.get("since") ?? undefined,
+        until: q.get("until") ?? undefined,
+        limit: numParam(q.get("limit"), 100),
+      });
+      return jsonRes(res, 200, { sessions: rows });
+    }
+    if (p === "/api/sessions/search") {
+      const query = q.get("q") ?? "";
+      if (!query.trim()) return jsonRes(res, 400, { error: "missing q" });
+      const hits = hub.sessions.search(query, {
+        machine_id: q.get("machine_id") ?? undefined,
+        harness: (q.get("harness") as never) ?? undefined,
+        project_id: q.get("project_id") ?? undefined,
+        limit: numParam(q.get("limit"), 50),
+      });
+      return jsonRes(res, 200, { query, hits });
+    }
+    if (p === "/api/sessions/files") {
+      const file_path = q.get("file_path") ?? "";
+      if (!file_path) return jsonRes(res, 400, { error: "missing file_path" });
+      const rows = hub.sessions.filesTouched(file_path, {
+        project_id: q.get("project_id") ?? undefined,
+        limit: numParam(q.get("limit"), 50),
+      });
+      return jsonRes(res, 200, { file_path, sessions: rows });
+    }
+    const m = p.match(/^\/api\/sessions\/([^/]+)$/);
+    if (m) {
+      const session_uid = decodeURIComponent(m[1]);
+      const r = hub.sessions.read(session_uid, {
+        include_transcript: q.get("transcript") === "1" || q.get("transcript") === "true",
+        include_events: q.get("events") !== "0" && q.get("events") !== "false",
+      });
+      if (!r) return jsonRes(res, 404, { error: "not_found" });
+      return jsonRes(res, 200, r);
+    }
+    return jsonRes(res, 404, { error: "not_found" });
+  } catch (err) {
+    return jsonRes(res, 500, {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+function jsonRes(res: http.ServerResponse, status: number, body: unknown): void {
+  const data = JSON.stringify(body);
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(data, "utf8"),
+    "Cache-Control": "no-store",
+  });
+  res.end(data);
+}
+
+function numParam(raw: string | null, def: number): number | undefined {
+  if (raw === null) return def;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : def;
 }
 
 // === Web UI static serving ============================================

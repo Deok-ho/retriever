@@ -155,7 +155,10 @@ const TOOL_GLYPH = {
 };
 
 function SessionChat({ s, onCopy, copied }) {
-  const transcript = CHAT_TRANSCRIPTS[s.uid] || fallbackTranscript(s);
+  // Live data from /api/sessions/:uid?events=1 takes priority when present.
+  const transcript = (Array.isArray(s.live_turns) && s.live_turns.length > 0)
+    ? s.live_turns
+    : (CHAT_TRANSCRIPTS[s.uid] || fallbackTranscript(s));
   const totalShown = transcript.length;
   const harnessLabel = s.harness === "claude_code" ? "Claude Code" : s.harness === "codex" ? "Codex" : s.harness;
 

@@ -14,6 +14,7 @@ import { handleMemoryWrite } from "./tools/memory-write.js";
 import { handleMemoryDelete } from "./tools/memory-delete.js";
 import type { HubService } from "./hub/service.js";
 import * as hubTools from "./hub/tools.js";
+import * as sessionTools from "./hub/sessions-tools.js";
 import type { VaultProjector } from "./projection/writer.js";
 
 export type ServerMode = "hub" | "client" | "embedded";
@@ -449,6 +450,113 @@ export function createMcpServer(deps: ServerDeps): McpServer {
         project_id,
         narrative: narrative ?? false,
       });
+      return { content: [{ type: "text" as const, text }] };
+    }
+  );
+
+  // === Session Manager (Phase 3B) — read-only viewer + mirror data plane ===
+
+  const harnessEnum = z.enum(["claude_code", "codex", "gemini", "qwen", "other"]);
+  const statusEnum = z.enum(["active", "idle", "archived", "cleared"]);
+  const eventTypeEnum = z.enum([
+    "user_msg",
+    "assistant_msg",
+    "tool_use",
+    "tool_result",
+    "thinking",
+    "system",
+    "meta",
+  ]);
+  const normalizedEventSchema = z.object({
+    seq: z.number().int(),
+    ts: z.string(),
+    event_type: eventTypeEnum,
+    tool_name: z.string().optional(),
+    payload: z.record(z.string(), z.unknown()),
+  });
+
+  server.tool(
+    "rtv_session_mirror",
+    "로컬 세션을 hub에 미러링합니다 (data plane). 본문/이벤트 UPSERT, files_touched 자동 추출",
+    {
+      machine_id: z.string(),
+      harness: harnessEnum,
+      native_id: z.string(),
+      project_id: z.string().nullable().optional(),
+      cwd_at_start: z.string().nullable().optional(),
+      started_at: z.string(),
+      last_active_at: z.string(),
+      ended_at: z.string().nullable().optional(),
+      status: statusEnum.optional(),
+      transcript_content: z.string(),
+      content_hash: z.string(),
+      events: z.array(normalizedEventSchema),
+      commit_sha: z.string().nullable().optional(),
+    },
+    async (input) => {
+      const text = sessionTools.mirrorSession(hub, input);
+      return { content: [{ type: "text" as const, text }] };
+    }
+  );
+
+  server.tool(
+    "rtv_session_list",
+    "세션 메타 목록을 조회합니다 (last_active_at desc)",
+    {
+      machine_id: z.string().optional(),
+      harness: harnessEnum.optional(),
+      project_id: z.string().optional(),
+      status: statusEnum.optional(),
+      since: z.string().optional(),
+      until: z.string().optional(),
+      limit: z.number().int().positive().optional(),
+    },
+    async (input) => {
+      const text = sessionTools.listSessions(hub, input);
+      return { content: [{ type: "text" as const, text }] };
+    }
+  );
+
+  server.tool(
+    "rtv_session_read",
+    "세션 1건의 상세 정보를 조회합니다",
+    {
+      session_uid: z.string(),
+      include_transcript: z.boolean().optional(),
+      include_events: z.boolean().optional(),
+    },
+    async (input) => {
+      const text = sessionTools.readSession(hub, input);
+      return { content: [{ type: "text" as const, text }] };
+    }
+  );
+
+  server.tool(
+    "rtv_session_search",
+    "세션 본문(transcript)을 FTS5로 검색합니다",
+    {
+      query: z.string().min(1),
+      machine_id: z.string().optional(),
+      harness: harnessEnum.optional(),
+      project_id: z.string().optional(),
+      limit: z.number().int().positive().optional(),
+    },
+    async (input) => {
+      const text = sessionTools.searchSessions(hub, input);
+      return { content: [{ type: "text" as const, text }] };
+    }
+  );
+
+  server.tool(
+    "rtv_session_files",
+    "특정 파일을 만진 세션을 시간 역순으로 조회합니다",
+    {
+      file_path: z.string().min(1),
+      project_id: z.string().optional(),
+      limit: z.number().int().positive().optional(),
+    },
+    async (input) => {
+      const text = sessionTools.filesTouchedByPath(hub, input);
       return { content: [{ type: "text" as const, text }] };
     }
   );

@@ -244,6 +244,88 @@ function SessionBrowser({ openAgent }) {
   const [filter,  setFilter]  = React.useState({ harness: "all", status: "all", q: "" });
   const [copied,  setCopied]  = React.useState(null);
 
+  // Live data — fetched from /api/sessions on mount. Falls back to mock SB_SESSIONS.
+  const [liveSessions, setLiveSessions] = React.useState(null);
+  const [liveStatus,   setLiveStatus]   = React.useState("loading");
+  const [timeWin,      setTimeWin]      = React.useState("today"); // today | yesterday | 7d | 30d | all
+  const [searchHits,   setSearchHits]   = React.useState(null); // null = no FTS in effect; otherwise Set<session_uid>
+
+  // Refetch when time window changes
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!window.RTV_LIVE) { setLiveStatus("mock"); setLiveSessions([]); return; }
+      setLiveStatus("loading");
+      try {
+        const since = window.RTV_LIVE.sinceFromWindow(timeWin);
+        const until = window.RTV_LIVE.untilFromWindow(timeWin);
+        const rows = await window.RTV_LIVE.fetchSessions({
+          limit: 300,
+          since: since || undefined,
+          until: until || undefined,
+        });
+        if (cancelled) return;
+        setLiveSessions(rows);
+        setLiveStatus(rows.length ? "live" : "empty");
+      } catch (e) {
+        if (cancelled) return;
+        setLiveStatus("error");
+        setLiveSessions([]);
+        console.warn("[retriever] live sessions fetch failed:", e.message || e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [timeWin]);
+
+  // Debounced FTS5 search — when filter.q changes, hit /api/sessions/search and intersect with current liveSessions.
+  React.useEffect(() => {
+    if (!window.RTV_LIVE) return;
+    const q = (filter.q || "").trim();
+    if (q.length < 2) { setSearchHits(null); return; }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const hits = await window.RTV_LIVE.searchSessions(q, { limit: 200 });
+        if (cancelled) return;
+        setSearchHits(new Set(hits.map(h => h.session_uid)));
+      } catch {
+        if (!cancelled) setSearchHits(null);
+      }
+    }, 300);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [filter.q]);
+
+  // Pick data source: live if any, else mock
+  const useLive = liveSessions && liveSessions.length > 0;
+  const ALL_SESSIONS = useLive ? liveSessions : SB_SESSIONS;
+
+  // When the user selects a session in live mode, fetch detail and merge events.
+  React.useEffect(() => {
+    if (!session || !session.live || session._detailLoaded) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const detail = await window.RTV_LIVE.fetchDetail(session.uid, { transcript: false });
+        if (cancelled) return;
+        const evs = detail.events || [];
+        const turns = window.RTV_LIVE.eventsToTurns(evs);
+        const files = window.RTV_LIVE.filesFromEvents(evs);
+        const summary = window.RTV_LIVE.summaryFromEvents(evs);
+        setSession((cur) => cur && cur.uid === session.uid ? {
+          ...cur,
+          summary: cur.summary || summary,
+          files: cur.files && cur.files.length ? cur.files : files,
+          live_events: evs,
+          live_turns: turns,
+          _detailLoaded: true,
+        } : cur);
+      } catch (e) {
+        console.warn("[retriever] session detail fetch failed:", e.message || e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [session?.uid]);
+
   // Auto-narrow children when parent changes
   React.useEffect(() => { if (repo && repo.split("@")[1] !== machine) setRepo(null); }, [machine]);
   React.useEffect(() => { if (branch && !branch.endsWith(repo || "")) setBranch(null); }, [repo]);
@@ -256,17 +338,33 @@ function SessionBrowser({ openAgent }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [focused]);
 
-  const visibleRepos    = SB_REPOS.filter(r => !machine || r.machine === machine);
-  const visibleBranches = SB_BRANCHES.filter(b => !repo || b.repo === repo);
-  let visibleSessions   = SB_SESSIONS.filter(s => {
+  // Build hierarchy filter sources from the active dataset (live in live mode, else fixtures)
+  const machineList = useLive
+    ? Array.from(new Map(ALL_SESSIONS.map(s => [s.machine || s.uid.split(":")[0], { id: s.machine || s.uid.split(":")[0], label: s.machine || s.uid.split(":")[0] }])).values())
+    : SB_MACHINES;
+
+  const visibleRepos    = useLive ? [] : SB_REPOS.filter(r => !machine || r.machine === machine);
+  const visibleBranches = useLive ? [] : SB_BRANCHES.filter(b => !repo || b.repo === repo);
+  let visibleSessions   = ALL_SESSIONS.filter(s => {
     if (branch  && s.branch !== branch) return false;
     if (repo    && !s.branch.endsWith(repo)) return false;
-    if (machine && !s.uid.startsWith(machine + ":")) return false;
+    if (machine && !s.uid.startsWith(machine + ":") && s.machine !== machine) return false;
     if (filter.harness !== "all" && s.harness !== filter.harness) return false;
     if (filter.status  !== "all" && s.status  !== filter.status)  return false;
     if (filter.q) {
-      const q = filter.q.toLowerCase();
-      if (!(s.summary.toLowerCase().includes(q) || s.uid.includes(q) || s.files.some(f => f.toLowerCase().includes(q)))) return false;
+      // Live mode: prefer FTS5 server-side hits when available; fall back to substring match
+      if (useLive && searchHits) {
+        if (!searchHits.has(s.uid)) return false;
+      } else {
+        const q = filter.q.toLowerCase();
+        if (!(
+          (s.summary || "").toLowerCase().includes(q) ||
+          (s.uid || "").includes(q) ||
+          (s.cwd || "").toLowerCase().includes(q) ||
+          (s.native_id || "").toLowerCase().includes(q) ||
+          (s.files || []).some(f => f.toLowerCase().includes(q))
+        )) return false;
+      }
     }
     return true;
   });
@@ -306,33 +404,74 @@ function SessionBrowser({ openAgent }) {
           <h1 className="text-[24px] font-semibold text-[#1A1A1A] leading-tight mt-1">Session browser</h1>
           <p className="text-[13px] text-[#5C5A55] mt-1">데몬이 수집한 세션을 좌측에서 선택, 우측에서 본문·resume 명령을 봅니다.</p>
         </div>
-        <div className="text-[11px] font-mono" style={{ color: "#8A8680" }}>{visibleSessions.length} session{visibleSessions.length === 1 ? "" : "s"}</div>
+        <div className="flex items-center gap-2 text-[11px] font-mono" style={{ color: "#8A8680" }}>
+          <span
+            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded"
+            title={liveStatus === "live" ? "라이브 데이터 (hub /api/sessions)" : liveStatus === "loading" ? "loading…" : liveStatus === "error" ? "API 도달 불가 — mock fallback" : "mock fixtures"}
+            style={{
+              background: liveStatus === "live" ? "#E8F0EA" : liveStatus === "error" ? "#FBEAE6" : "#F3F1EC",
+              color: liveStatus === "live" ? "#5A8C6F" : liveStatus === "error" ? "#A83E3E" : "#8A8680",
+            }}>
+            <span className="w-1.5 h-1.5 rounded-full" style={{
+              background: liveStatus === "live" ? "#5A8C6F" : liveStatus === "loading" ? "#A88467" : liveStatus === "error" ? "#A83E3E" : "#C7C3B8",
+              animation: liveStatus === "loading" ? "rtvPulse 1.6s ease-in-out infinite" : "none",
+            }}/>
+            {liveStatus}
+          </span>
+          <span>{visibleSessions.length} session{visibleSessions.length === 1 ? "" : "s"}</span>
+        </div>
       </div>
+
+      {/* Time window chips — primary affordance: "오늘 한 일" 한 번에 보기 */}
+      {useLive && (
+        <div className="mb-3 flex items-center gap-1.5 flex-wrap">
+          {[
+            { id: "today",     label: "오늘",     en: "today" },
+            { id: "yesterday", label: "어제",     en: "yesterday" },
+            { id: "7d",        label: "7일",      en: "7d" },
+            { id: "30d",       label: "30일",     en: "30d" },
+            { id: "all",       label: "전체",     en: "all" },
+          ].map(w => {
+            const active = timeWin === w.id;
+            return (
+              <button key={w.id} onClick={() => setTimeWin(w.id)}
+                className="text-[12px] font-mono px-3 py-1.5 rounded-full border transition"
+                style={{
+                  borderColor: active ? "#C26F4A" : "#E8E6DE",
+                  background:  active ? "#FBEFE8" : "#FFFFFF",
+                  color:       active ? "#8F4E2C" : "#5C5A55",
+                }}>
+                {w.label}<span className="ml-1.5 opacity-60">{w.en}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* Filter bar — machine / repo / branch as compact dropdowns + search + harness + status */}
       <div className="mb-3 p-2.5 rounded-md border flex items-center gap-2 flex-wrap"
            style={{ borderColor: "#E8E6DE", background: "#FDFCF7" }}>
         <FilterSelect label="machine" value={machine || ""} onChange={(v) => { setMachine(v || null); setRepo(null); setBranch(null); }}>
-          <option value="">all machines · {SB_SESSIONS.length}</option>
-          {SB_MACHINES.map(m => {
-            const cnt = SB_SESSIONS.filter(s => s.uid.startsWith(m.id + ":")).length;
+          <option value="">all machines · {ALL_SESSIONS.length}</option>
+          {machineList.map(m => {
+            const cnt = ALL_SESSIONS.filter(s => s.uid.startsWith(m.id + ":") || s.machine === m.id).length;
             return <option key={m.id} value={m.id}>▣ {m.label} · {cnt}</option>;
           })}
         </FilterSelect>
-        <FilterSelect label="repo" value={repo || ""} onChange={(v) => { setRepo(v || null); setBranch(null); if (v) { const r = SB_REPOS.find(x => x.id === v); if (r) setMachine(r.machine); } }}>
+        {!useLive && <FilterSelect label="repo" value={repo || ""} onChange={(v) => { setRepo(v || null); setBranch(null); if (v) { const r = SB_REPOS.find(x => x.id === v); if (r) setMachine(r.machine); } }}>
           <option value="">all repos · {visibleRepos.length}</option>
           {visibleRepos.map(r => {
             const cnt = SB_SESSIONS.filter(s => s.branch.endsWith(r.id)).length;
             return <option key={r.id} value={r.id}>◆ {r.name} · {cnt}</option>;
           })}
-        </FilterSelect>
-        <FilterSelect label="branch" value={branch || ""} onChange={(v) => { setBranch(v || null); if (v) { const b = SB_BRANCHES.find(x => x.id === v); if (b) { const r = SB_REPOS.find(x => x.id === b.repo); if (r) { setRepo(r.id); setMachine(r.machine); } } } }}>
+        </FilterSelect>}
+        {!useLive && <FilterSelect label="branch" value={branch || ""} onChange={(v) => { setBranch(v || null); if (v) { const b = SB_BRANCHES.find(x => x.id === v); if (b) { const r = SB_REPOS.find(x => x.id === b.repo); if (r) { setRepo(r.id); setMachine(r.machine); } } } }}>
           <option value="">all branches · {visibleBranches.length}</option>
           {visibleBranches.map(b => {
             const cnt = SB_SESSIONS.filter(s => s.branch === b.id).length;
             return <option key={b.id} value={b.id}>⎇ {b.name} · {cnt}</option>;
           })}
-        </FilterSelect>
+        </FilterSelect>}
         <span className="w-px h-5" style={{ background: "#E8E6DE" }}></span>
         <FilterSelect label="harness" value={filter.harness} onChange={(v) => setFilter({ ...filter, harness: v })}>
           <option value="all">all harnesses</option>
@@ -349,9 +488,15 @@ function SessionBrowser({ openAgent }) {
         <input
           value={filter.q}
           onChange={(e) => setFilter({ ...filter, q: e.target.value })}
-          placeholder="🔍 summary · file · uid"
-          className="text-[12px] font-mono px-2.5 py-1.5 rounded border ml-auto w-[260px]"
+          placeholder={useLive ? "🔍 본문 검색 (FTS5)" : "🔍 summary · file · uid"}
+          className="text-[12px] font-mono px-2.5 py-1.5 rounded border ml-auto flex-1 min-w-[160px] sm:flex-initial sm:w-[260px]"
           style={{ borderColor: "#E8E6DE", background: "#FFFFFF", color: "#1A1A1A" }}/>
+        {useLive && filter.q.trim().length >= 2 && (
+          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded"
+                style={{ color: searchHits ? "#5A8C6F" : "#A88467", background: "#F3F1EC" }}>
+            {searchHits ? `FTS5 · ${searchHits.size} match` : "검색 중…"}
+          </span>
+        )}
         {(machine || repo || branch || filter.harness !== "all" || filter.status !== "all" || filter.q) && (
           <button onClick={() => { setMachine(null); setRepo(null); setBranch(null); setFilter({ harness: "all", status: "all", q: "" }); }}
                   className="text-[11px] font-mono px-2 py-1.5 rounded"
@@ -359,9 +504,9 @@ function SessionBrowser({ openAgent }) {
         )}
       </div>
 
-      {/* Body: sessions list (left) + detail (right) */}
-      <div className="grid grid-cols-[340px_1fr] gap-3" style={{ minHeight: 600 }}>
-        <Card className="p-0 overflow-hidden">
+      {/* Body: sessions list (left) + detail (right). Mobile = stacked, list↔detail toggle. */}
+      <div className="rtv-sessions-body grid gap-3" style={{ minHeight: 600 }}>
+        <Card className={`p-0 overflow-hidden ${session ? "rtv-sessions-list-when-detail" : ""}`}>
           <ColHeader>sessions · {visibleSessions.length}</ColHeader>
           <div className="p-1.5 max-h-[760px] overflow-auto">
             {visibleSessions.length === 0 && (
@@ -419,9 +564,17 @@ function SessionBrowser({ openAgent }) {
           </div>
         </Card>
 
-        <div>
+        <div className={`rtv-sessions-detail ${!session ? "rtv-sessions-detail-empty" : ""}`}>
           {session ? (
-            <SessionDetail s={session} onCopy={copy} copied={copied} openAgent={openAgent}/>
+            <div>
+              {/* Mobile-only back button */}
+              <button onClick={() => setSession(null)}
+                className="rtv-sessions-back inline-flex items-center gap-1.5 mb-3 px-2.5 py-1.5 rounded-md border text-[12px] font-mono"
+                style={{ borderColor: "#E8E6DE", background: "#FFFFFF", color: "#5C5A55", display: "none" }}>
+                <span>‹</span><span>list</span>
+              </button>
+              <SessionDetail s={session} onCopy={copy} copied={copied} openAgent={openAgent}/>
+            </div>
           ) : (
             <Card className="p-12 text-center text-[12px] font-mono h-full flex items-center justify-center" style={{ color: "#8A8680" }}>
               <div>

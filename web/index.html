@@ -53,11 +53,24 @@
   @media (max-width: 767px) {
     main > div { padding: 16px !important; }
   }
+
+  /* === Sessions browser — mobile responsive (list ↔ detail toggle) === */
+  .rtv-sessions-body { grid-template-columns: 340px 1fr; }
+  @media (max-width: 767px) {
+    .rtv-sessions-body { grid-template-columns: 1fr; }
+    /* When a session is selected on mobile, hide list and show only detail */
+    .rtv-sessions-list-when-detail { display: none; }
+    /* Hide empty-state placeholder on mobile (no session = just show list) */
+    .rtv-sessions-detail-empty { display: none; }
+    /* Mobile back button visible */
+    .rtv-sessions-back { display: inline-flex !important; }
+  }
 </style>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel" src="retriever-data.jsx"></script>
+<script type="text/babel" src="retriever-data-live.jsx"></script>
 <script type="text/babel" src="retriever-ui.jsx"></script>
 <script type="text/babel" src="retriever-board.jsx"></script>
 <script type="text/babel" src="retriever-detail.jsx"></script>

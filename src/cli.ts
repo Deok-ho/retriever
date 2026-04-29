@@ -24,6 +24,11 @@ Usage:
   retriever client stdio               run as MCP client daemon (proxies to hub)
   retriever client status              queue / cache status
   retriever client push-now            flush offline queue to hub
+  retriever client capture-sessions [--commit-sha SHA]
+                                       scan ~/.claude + ~/.codex jsonls and mirror to hub
+  retriever client session-status      capture-state.json snapshot
+  retriever git-hook install [--repo PATH]    install post-commit capture hook
+  retriever git-hook uninstall [--repo PATH]  remove post-commit capture hook
   retriever --help                     this help
   retriever --version                  version
 
@@ -35,6 +40,7 @@ Environment:
   RTV_HUB_HOST          hub HTTP bind host (default: 127.0.0.1; use 0.0.0.0 in containers)
   RTV_WEB_DIR           static web UI directory served at /ui/* (default: <repo>/web)
   RTV_HUB_TOKEN         optional bearer token for hub HTTP auth
+  RTV_MACHINE_ID        machine slug used in session_uid (default: hostname)
 `;
 
 const VERSION = "0.1.0";
@@ -69,7 +75,15 @@ async function main(argv: string[]): Promise<number> {
     if (sub === "stdio") return runClientStdio();
     if (sub === "status") return runClientStatus();
     if (sub === "push-now") return runClientPushNow();
+    if (sub === "capture-sessions") return runCaptureSessions(rest);
+    if (sub === "session-status") return runSessionStatus();
     return badUsage(`unknown client subcommand: ${sub ?? "(none)"}`);
+  }
+
+  if (group === "git-hook") {
+    if (sub === "install") return runGitHookInstall(rest);
+    if (sub === "uninstall") return runGitHookUninstall(rest);
+    return badUsage(`unknown git-hook subcommand: ${sub ?? "(none)"}`);
   }
 
   return badUsage(`unknown command: ${group}`);
@@ -126,7 +140,7 @@ async function runHubStart(args: string[]): Promise<number> {
     );
   }
 
-  await startHubHttpServer({ serverFactory, port, host, token });
+  await startHubHttpServer({ serverFactory, port, host, token, hub });
   return new Promise<number>((resolve) => {
     const shutdown = () => {
       hub.close();
@@ -193,6 +207,99 @@ async function runClientStatus(): Promise<number> {
 async function runClientPushNow(): Promise<number> {
   const { pushNow } = await import("./client/daemon.js");
   return pushNow();
+}
+
+async function runCaptureSessions(args: string[]): Promise<number> {
+  const {
+    captureSessions,
+    resolveMachineId,
+    defaultClaudeProjectsDir,
+    defaultCodexSessionsDir,
+    defaultCaptureStateFile,
+  } = await import("./sessions/capture.js");
+  const commitIdx = args.indexOf("--commit-sha");
+  const commitSha = commitIdx >= 0 ? args[commitIdx + 1] : null;
+
+  const hub = new HubService();
+  try {
+    const machineId = resolveMachineId();
+    const result = await captureSessions({
+      hub,
+      machineId,
+      claudeProjectsDir: defaultClaudeProjectsDir(),
+      codexSessionsDir: defaultCodexSessionsDir(),
+      stateFile: defaultCaptureStateFile(),
+      commitSha,
+    });
+    process.stdout.write(
+      `capture-sessions ok — machine=${machineId} scanned=${result.scanned} mirrored=${result.mirrored} skipped=${result.skipped} errors=${result.errors.length}\n`
+    );
+    if (result.errors.length) {
+      for (const e of result.errors.slice(0, 10)) {
+        process.stderr.write(`  ! ${e.file}: ${e.error}\n`);
+      }
+    }
+    return result.errors.length > 0 ? 1 : 0;
+  } finally {
+    hub.close();
+  }
+}
+
+async function runSessionStatus(): Promise<number> {
+  const fs = await import("node:fs/promises");
+  const { defaultCaptureStateFile, resolveMachineId } = await import("./sessions/capture.js");
+  const stateFile = defaultCaptureStateFile();
+  let raw: string;
+  try {
+    raw = await fs.readFile(stateFile, "utf8");
+  } catch {
+    process.stdout.write(
+      `session-status — machine=${resolveMachineId()} state=(none) file=${stateFile}\n`
+    );
+    return 0;
+  }
+  const state = JSON.parse(raw) as {
+    last_captured_at?: string;
+    hashes?: Record<string, string>;
+  };
+  const known = Object.keys(state.hashes ?? {}).length;
+  process.stdout.write(
+    `session-status — machine=${resolveMachineId()} last=${state.last_captured_at ?? "(never)"} tracked=${known} file=${stateFile}\n`
+  );
+  return 0;
+}
+
+async function runGitHookInstall(args: string[]): Promise<number> {
+  const { installGitHook } = await import("./sessions/capture.js");
+  const repoIdx = args.indexOf("--repo");
+  const repoPath = repoIdx >= 0 ? args[repoIdx + 1] : process.cwd();
+  try {
+    const r = installGitHook({ repoPath });
+    process.stdout.write(
+      `${r.alreadyManaged ? "updated" : "installed"} ${r.hookPath}\n`
+    );
+    return 0;
+  } catch (err) {
+    process.stderr.write(
+      `git-hook install failed: ${err instanceof Error ? err.message : String(err)}\n`
+    );
+    return 1;
+  }
+}
+
+async function runGitHookUninstall(args: string[]): Promise<number> {
+  const { uninstallGitHook } = await import("./sessions/capture.js");
+  const repoIdx = args.indexOf("--repo");
+  const repoPath = repoIdx >= 0 ? args[repoIdx + 1] : process.cwd();
+  const r = uninstallGitHook({ repoPath });
+  if (r.removed) {
+    process.stdout.write(`removed ${r.hookPath}\n`);
+  } else {
+    process.stdout.write(
+      `nothing to remove (no retriever-managed hook at ${r.hookPath})\n`
+    );
+  }
+  return 0;
 }
 
 main(process.argv).then(
