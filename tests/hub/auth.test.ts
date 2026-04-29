@@ -67,9 +67,13 @@ describe("Hub HTTP auth — global gate (Codex iter5 #1 fix)", () => {
       token: TOKEN,
     });
 
-    // /healthz: no auth needed
+    // /healthz: no auth needed, includes DB ping
     const health = await fetch(`http://127.0.0.1:${handle.port}/healthz`);
     expect(health.status).toBe(200);
+    const hb = await health.json() as { ok: boolean; db?: { ready: boolean; latency_ms: number } };
+    expect(hb.ok).toBe(true);
+    expect(hb.db?.ready).toBe(true);
+    expect(typeof hb.db?.latency_ms).toBe("number");
 
     // /api/sessions without token → 401
     const noAuth = await fetch(`http://127.0.0.1:${handle.port}/api/sessions`);

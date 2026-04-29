@@ -186,8 +186,34 @@ export async function startHubHttpServer(opts: HubHttpOptions): Promise<HubHttpH
       }
 
       if (url.pathname === "/healthz") {
-        res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ ok: true, ts: new Date().toISOString() }));
+        // (Codex 주의급 #12) DB ping. Verifies SQLite is actually queryable —
+        // hub.db corruption / volume unmount would still pass a HTTP-only
+        // healthcheck. SELECT 1 is ~µs; we cap latency at 1s in the response.
+        let dbReady = true;
+        let dbLatencyMs = 0;
+        let dbError: string | undefined;
+        if (opts.hub) {
+          const t0 = Date.now();
+          try {
+            opts.hub.db.prepare("SELECT 1").get();
+          } catch (e) {
+            dbReady = false;
+            dbError = e instanceof Error ? e.message : String(e);
+          }
+          dbLatencyMs = Date.now() - t0;
+        }
+        const overallOk = dbReady;
+        res.writeHead(overallOk ? 200 : 503, {
+          "Content-Type": "application/json; charset=utf-8",
+        });
+        res.end(
+          JSON.stringify({
+            ok: overallOk,
+            ts: new Date().toISOString(),
+            db: { ready: dbReady, latency_ms: dbLatencyMs, error: dbError },
+            host,
+          })
+        );
         return;
       }
 

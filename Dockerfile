@@ -42,9 +42,11 @@ VOLUME ["/data"]
 
 EXPOSE 8731
 
-# Lightweight healthcheck — hits /healthz on the hub HTTP endpoint.
-HEALTHCHECK --interval=20s --timeout=3s --start-period=5s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+ (process.env.RTV_HUB_PORT||8731) +'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+# Healthcheck — hits /healthz which now also performs a SQLite SELECT 1 ping
+# (Codex 주의급 #12). Fails the container when the DB is unreachable even if
+# the HTTP server itself is up.
+HEALTHCHECK --interval=20s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+ (process.env.RTV_HUB_PORT||8731) +'/healthz').then(async r=>{const b=await r.json().catch(()=>({}));process.exit(r.ok && b && b.db && b.db.ready?0:1)}).catch(()=>process.exit(1))"
 
 ENTRYPOINT ["node", "dist/cli.js"]
 CMD ["hub", "start", "--http"]
