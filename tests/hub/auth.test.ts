@@ -99,6 +99,70 @@ describe("Hub HTTP auth — global gate (Codex iter5 #1 fix)", () => {
       `http://127.0.0.1:${handle.port}/api/sessions?token=${TOKEN}`
     );
     expect(qtok.status).toBe(200);
+
+    // /mcp without token → 401 (Codex iter7 — gate must cover MCP path too)
+    const mcpNoAuth = await fetch(`http://127.0.0.1:${handle.port}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(mcpNoAuth.status).toBe(401);
+  });
+
+  test("?token= query bootstraps an HttpOnly session cookie (Codex iter7 fix)", async () => {
+    const config = loadConfig();
+    handle = await startHubHttpServer({
+      serverFactory: () => createMcpServer({ config, hub, mode: "hub" }),
+      hub,
+      port: 0,
+      host: "0.0.0.0",
+      token: TOKEN,
+    });
+
+    // Initial /api request with ?token= must succeed AND issue a Set-Cookie
+    const r = await fetch(
+      `http://127.0.0.1:${handle.port}/api/sessions?token=${TOKEN}`
+    );
+    expect(r.status).toBe(200);
+    const setCookie = r.headers.get("set-cookie");
+    expect(setCookie).toBeTruthy();
+    expect(setCookie!).toMatch(/rtv_hub_session=/);
+    expect(setCookie!).toMatch(/HttpOnly/);
+    expect(setCookie!).toMatch(/SameSite=Lax/);
+
+    // Extract the cookie value and verify subsequent request without ?token= works
+    const m = setCookie!.match(/rtv_hub_session=([^;]+)/);
+    expect(m).not.toBeNull();
+    const cookieVal = decodeURIComponent(m![1]);
+    expect(cookieVal).toBe(TOKEN);
+
+    const r2 = await fetch(`http://127.0.0.1:${handle.port}/api/sessions`, {
+      headers: { Cookie: `rtv_hub_session=${encodeURIComponent(TOKEN)}` },
+    });
+    expect(r2.status).toBe(200);
+
+    // Static /ui asset (jsx) reachable with cookie alone
+    const r3 = await fetch(`http://127.0.0.1:${handle.port}/ui/retriever-data.jsx`, {
+      headers: { Cookie: `rtv_hub_session=${encodeURIComponent(TOKEN)}` },
+    });
+    expect(r3.status).toBe(200);
+  });
+
+  test("/ui/?token=… redirects to clean URL (strip secret from address bar)", async () => {
+    const config = loadConfig();
+    handle = await startHubHttpServer({
+      serverFactory: () => createMcpServer({ config, hub, mode: "hub" }),
+      hub,
+      port: 0,
+      host: "0.0.0.0",
+      token: TOKEN,
+    });
+    const r = await fetch(`http://127.0.0.1:${handle.port}/ui/?token=${TOKEN}`, {
+      redirect: "manual",
+    });
+    expect(r.status).toBe(302);
+    expect(r.headers.get("location")).toBe("/ui/");
+    expect(r.headers.get("set-cookie")).toMatch(/rtv_hub_session=/);
   });
 
   test("loopback bind: token optional, no auth enforced", async () => {

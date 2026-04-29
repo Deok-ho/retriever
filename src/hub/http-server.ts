@@ -64,20 +64,62 @@ export async function startHubHttpServer(opts: HubHttpOptions): Promise<HubHttpH
     );
   }
 
-  const isAuthorized = (req: http.IncomingMessage): boolean => {
-    if (!requireAuth) return true; // loopback: trust the host
-    const headerAuth = req.headers["authorization"];
-    if (typeof headerAuth === "string" && headerAuth === `Bearer ${opts.token}`) return true;
-    // Fallback: ?token=… query param so PWA / mobile bookmarks (which can't set
-    // headers) still work. Not stronger than a bearer header — same secret.
+  // (Codex iter7 #6) — Cookie bootstrap. ?token= only arrives on the initial
+  // HTML request; static <script src=…> and fetch() never propagate query
+  // params or Authorization automatically. We exchange a matching ?token= or
+  // Bearer header for an HttpOnly session cookie so all subsequent asset/API
+  // requests authenticate without manual token plumbing.
+  const COOKIE_NAME = "rtv_hub_session";
+
+  const cookieValue = (req: http.IncomingMessage, name: string): string | null => {
+    const raw = req.headers["cookie"];
+    if (typeof raw !== "string") return null;
+    for (const part of raw.split(";")) {
+      const [k, v] = part.trim().split("=");
+      if (k === name && typeof v === "string") return decodeURIComponent(v);
+    }
+    return null;
+  };
+
+  const tokenFromQuery = (req: http.IncomingMessage): string | null => {
     try {
       const u = new URL(req.url ?? "/", `http://${host}:${opts.port}`);
       const q = u.searchParams.get("token");
-      if (typeof q === "string" && q === opts.token) return true;
+      return typeof q === "string" ? q : null;
     } catch {
-      /* ignore */
+      return null;
     }
+  };
+
+  const tokenFromBearer = (req: http.IncomingMessage): string | null => {
+    const h = req.headers["authorization"];
+    if (typeof h !== "string") return null;
+    return h.startsWith("Bearer ") ? h.slice(7) : null;
+  };
+
+  const isAuthorized = (req: http.IncomingMessage): boolean => {
+    if (!requireAuth) return true; // loopback: trust the host
+    if (tokenFromBearer(req) === opts.token) return true;
+    if (tokenFromQuery(req) === opts.token) return true;
+    if (cookieValue(req, COOKIE_NAME) === opts.token) return true;
     return false;
+  };
+
+  /** Returns Set-Cookie header value if the inbound request supplied a fresh
+   *  `?token=…` (matched) or Bearer header AND no cookie was attached yet. */
+  const maybeIssueCookie = (req: http.IncomingMessage): string | null => {
+    if (!requireAuth || !opts.token) return null;
+    if (cookieValue(req, COOKIE_NAME) === opts.token) return null; // already set
+    const fresh = tokenFromQuery(req) === opts.token || tokenFromBearer(req) === opts.token;
+    if (!fresh) return null;
+    const attrs = [
+      `${COOKIE_NAME}=${encodeURIComponent(opts.token)}`,
+      "Path=/",
+      "HttpOnly",
+      "SameSite=Lax",
+      "Max-Age=43200", // 12h
+    ];
+    return attrs.join("; ");
   };
 
   const httpServer = http.createServer(async (req, res) => {
@@ -96,9 +138,54 @@ export async function startHubHttpServer(opts: HubHttpOptions): Promise<HubHttpH
         return;
       }
 
+      // After auth passes, mint a session cookie if this request bootstrapped
+      // via ?token= or Bearer. Subsequent asset/API requests use the cookie.
+      const setCookie = maybeIssueCookie(req);
+      if (setCookie) {
+        // Wrap writeHead so handlers don't need to know about cookie issuance.
+        const origWriteHead = res.writeHead.bind(res);
+        res.writeHead = ((statusCode: number, headersOrReason?: unknown, maybeHeaders?: unknown) => {
+          let headers: http.OutgoingHttpHeaders | undefined;
+          let reason: string | undefined;
+          if (typeof headersOrReason === "string") {
+            reason = headersOrReason;
+            headers = maybeHeaders as http.OutgoingHttpHeaders | undefined;
+          } else {
+            headers = headersOrReason as http.OutgoingHttpHeaders | undefined;
+          }
+          const merged: http.OutgoingHttpHeaders = { ...(headers ?? {}) };
+          // Don't overwrite if a handler already set Set-Cookie.
+          if (!merged["Set-Cookie"] && !merged["set-cookie"]) {
+            merged["Set-Cookie"] = setCookie;
+          }
+          return reason
+            ? origWriteHead(statusCode, reason, merged)
+            : origWriteHead(statusCode, merged);
+        }) as typeof res.writeHead;
+      }
+
       if (url.pathname === "/healthz") {
         res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
         res.end(JSON.stringify({ ok: true, ts: new Date().toISOString() }));
+        return;
+      }
+
+      // If the request arrived via ?token= on the UI HTML, redirect once to
+      // strip the secret from the URL bar (cookie now carries auth).
+      if (
+        setCookie &&
+        tokenFromQuery(req) === opts.token &&
+        (url.pathname === "/ui" ||
+          url.pathname === "/ui/" ||
+          url.pathname === "/ui/index.html")
+      ) {
+        url.searchParams.delete("token");
+        const cleanPath = url.pathname + (url.searchParams.toString() ? "?" + url.searchParams.toString() : "");
+        res.writeHead(302, {
+          Location: cleanPath,
+          "Set-Cookie": setCookie,
+        });
+        res.end();
         return;
       }
 

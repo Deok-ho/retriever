@@ -325,14 +325,23 @@ function SessionBrowser({ openAgent }) {
     return () => { cancelled = true; clearTimeout(t); };
   }, [filter.q]);
 
-  // Codex iter5 #3 fix — distinguish:
-  //   "live" (API ok, ≥1 row) | "empty" (API ok, 0 rows in this window)
-  //   "loading" (still fetching) | "error"/"mock" (API unreachable → demo)
-  // useLive: render live data path even when 0 rows. Mock fallback ONLY when API unreachable.
+  // Codex iter5 #3 + iter7 fix — strict states:
+  //   "live"     (API ok, ≥1 row) → render real data
+  //   "empty"    (API ok, 0 rows) → render empty state, NOT mock
+  //   "loading"  (still fetching) → render skeleton, NOT mock (iter7 fix —
+  //              previously fell through to mock when API was slow/hanging)
+  //   "error"/"mock" (API unreachable) → render mock + red demo banner
   const apiReachable = liveStatus === "live" || liveStatus === "empty";
-  const useLive = apiReachable;
-  const ALL_SESSIONS = useLive ? (liveSessions || []) : SB_SESSIONS;
-  const showMockBanner = !useLive && liveStatus !== "loading";
+  const isLoading    = liveStatus === "loading";
+  const useLive      = apiReachable;
+  // During loading we deliberately render an empty array (skeleton path) so the
+  // user never sees mock content "leak" before live data arrives.
+  const ALL_SESSIONS = useLive
+    ? (liveSessions || [])
+    : isLoading
+      ? []
+      : SB_SESSIONS;
+  const showMockBanner = liveStatus === "error" || liveStatus === "mock";
 
   // When the user selects a session in live mode, fetch detail and merge events.
   React.useEffect(() => {
@@ -575,7 +584,18 @@ function SessionBrowser({ openAgent }) {
         <Card className={`p-0 overflow-hidden ${session ? "rtv-sessions-list-when-detail" : ""}`}>
           <ColHeader>sessions · {visibleSessions.length}</ColHeader>
           <div className="p-1.5 max-h-[760px] overflow-auto">
-            {visibleSessions.length === 0 && (
+            {isLoading && (
+              <div className="space-y-1.5 p-1.5" aria-busy="true">
+                {[0,1,2,3,4].map(i => (
+                  <div key={i} className="rounded-md p-2.5 border" style={{ borderColor: "#F0EEE6", background: "#FBFAF4" }}>
+                    <div className="h-3 rounded" style={{ background: "#F0EEE6", width: "60%", animation: "rtvPulse 1.6s ease-in-out infinite" }}/>
+                    <div className="mt-2 h-2 rounded" style={{ background: "#F3F1EC", width: "90%" }}/>
+                    <div className="mt-1 h-2 rounded" style={{ background: "#F3F1EC", width: "75%" }}/>
+                  </div>
+                ))}
+              </div>
+            )}
+            {!isLoading && visibleSessions.length === 0 && (
               <div className="px-3 py-8 text-center text-[11px] font-mono" style={{ color: "#8A8680" }}>
                 {useLive && ALL_SESSIONS.length === 0
                   ? `이 시간 윈도(${timeWin})에 ${searchHits ? "매치되는 " : ""}세션 없음`
