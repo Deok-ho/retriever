@@ -325,23 +325,25 @@ function SessionBrowser({ openAgent }) {
     return () => { cancelled = true; clearTimeout(t); };
   }, [filter.q]);
 
-  // Codex iter5 #3 + iter7 fix — strict states:
+  // Codex iter5/7/8 — strict 3-way state machine:
   //   "live"     (API ok, ≥1 row) → render real data
   //   "empty"    (API ok, 0 rows) → render empty state, NOT mock
-  //   "loading"  (still fetching) → render skeleton, NOT mock (iter7 fix —
-  //              previously fell through to mock when API was slow/hanging)
+  //   "loading"  (still fetching) → render skeleton, NOT mock
   //   "error"/"mock" (API unreachable) → render mock + red demo banner
+  // mockMode is the *only* gate for any SB_* fixture access. Previously we
+  // gated on `useLive` which incorrectly admitted SB_* during "loading" — Codex
+  // iter8 caught that mock repo/branch filter dropdowns + SB_SESSIONS counts
+  // were leaking before the API responded.
   const apiReachable = liveStatus === "live" || liveStatus === "empty";
   const isLoading    = liveStatus === "loading";
   const useLive      = apiReachable;
-  // During loading we deliberately render an empty array (skeleton path) so the
-  // user never sees mock content "leak" before live data arrives.
+  const mockMode     = liveStatus === "error" || liveStatus === "mock";
   const ALL_SESSIONS = useLive
     ? (liveSessions || [])
-    : isLoading
-      ? []
-      : SB_SESSIONS;
-  const showMockBanner = liveStatus === "error" || liveStatus === "mock";
+    : mockMode
+      ? SB_SESSIONS
+      : []; // loading or any other state → empty array (skeleton path)
+  const showMockBanner = mockMode;
 
   // When the user selects a session in live mode, fetch detail and merge events.
   React.useEffect(() => {
@@ -382,13 +384,14 @@ function SessionBrowser({ openAgent }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [focused]);
 
-  // Build hierarchy filter sources from the active dataset (live in live mode, else fixtures)
-  const machineList = useLive
-    ? Array.from(new Map(ALL_SESSIONS.map(s => [s.machine || s.uid.split(":")[0], { id: s.machine || s.uid.split(":")[0], label: s.machine || s.uid.split(":")[0] }])).values())
-    : SB_MACHINES;
+  // Hierarchy filter sources — mock fixtures only when in mockMode. Loading
+  // and live both derive from ALL_SESSIONS (empty during loading → harmless).
+  const machineList = mockMode
+    ? SB_MACHINES
+    : Array.from(new Map(ALL_SESSIONS.map(s => [s.machine || s.uid.split(":")[0], { id: s.machine || s.uid.split(":")[0], label: s.machine || s.uid.split(":")[0] }])).values());
 
-  const visibleRepos    = useLive ? [] : SB_REPOS.filter(r => !machine || r.machine === machine);
-  const visibleBranches = useLive ? [] : SB_BRANCHES.filter(b => !repo || b.repo === repo);
+  const visibleRepos    = mockMode ? SB_REPOS.filter(r => !machine || r.machine === machine) : [];
+  const visibleBranches = mockMode ? SB_BRANCHES.filter(b => !repo || b.repo === repo) : [];
   let visibleSessions   = ALL_SESSIONS.filter(s => {
     if (branch  && s.branch !== branch) return false;
     if (repo    && !s.branch.endsWith(repo)) return false;
@@ -533,14 +536,14 @@ function SessionBrowser({ openAgent }) {
             return <option key={m.id} value={m.id}>▣ {m.label} · {cnt}</option>;
           })}
         </FilterSelect>
-        {!useLive && <FilterSelect label="repo" value={repo || ""} onChange={(v) => { setRepo(v || null); setBranch(null); if (v) { const r = SB_REPOS.find(x => x.id === v); if (r) setMachine(r.machine); } }}>
+        {mockMode && <FilterSelect label="repo" value={repo || ""} onChange={(v) => { setRepo(v || null); setBranch(null); if (v) { const r = SB_REPOS.find(x => x.id === v); if (r) setMachine(r.machine); } }}>
           <option value="">all repos · {visibleRepos.length}</option>
           {visibleRepos.map(r => {
             const cnt = SB_SESSIONS.filter(s => s.branch.endsWith(r.id)).length;
             return <option key={r.id} value={r.id}>◆ {r.name} · {cnt}</option>;
           })}
         </FilterSelect>}
-        {!useLive && <FilterSelect label="branch" value={branch || ""} onChange={(v) => { setBranch(v || null); if (v) { const b = SB_BRANCHES.find(x => x.id === v); if (b) { const r = SB_REPOS.find(x => x.id === b.repo); if (r) { setRepo(r.id); setMachine(r.machine); } } } }}>
+        {mockMode && <FilterSelect label="branch" value={branch || ""} onChange={(v) => { setBranch(v || null); if (v) { const b = SB_BRANCHES.find(x => x.id === v); if (b) { const r = SB_REPOS.find(x => x.id === b.repo); if (r) { setRepo(r.id); setMachine(r.machine); } } } }}>
           <option value="">all branches · {visibleBranches.length}</option>
           {visibleBranches.map(b => {
             const cnt = SB_SESSIONS.filter(s => s.branch === b.id).length;
