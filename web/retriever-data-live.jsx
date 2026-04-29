@@ -113,42 +113,56 @@ async function rtvFetchLiveSessionDetail(uid, opts = {}) {
   return await r.json();
 }
 
-// Build chat-turn array from normalized events for retriever-session-chat.jsx
+// Build chat-turn array from normalized events for retriever-session-chat.jsx.
+// Each turn carries its real ts (no interpolation) and full payload metadata.
 function rtvEventsToTurns(events) {
   if (!Array.isArray(events)) return [];
   const turns = [];
   for (const ev of events) {
     let payload = {};
     try { payload = typeof ev.payload_json === "string" ? JSON.parse(ev.payload_json) : (ev.payload || {}); } catch { /* ignore */ }
+    const ts = ev.ts || "";
     switch (ev.event_type) {
       case "user_msg":
-        if (payload.text) turns.push({ kind: "user", text: payload.text });
+        if (payload.text) turns.push({ kind: "user", text: payload.text, ts });
         break;
       case "assistant_msg":
-        if (payload.text) turns.push({ kind: "assistant", text: payload.text });
+        if (payload.text) turns.push({ kind: "assistant", text: payload.text, ts });
         break;
       case "thinking":
-        if (payload.text) turns.push({ kind: "thinking", text: payload.text });
+        if (payload.text) turns.push({ kind: "thinking", text: payload.text, ts });
         break;
       case "tool_use": {
-        const args = payload.command || payload.file_path || (payload.args ? JSON.stringify(payload.args).slice(0, 80) : "");
+        // Friendly arg label: command for Bash, file_path for Edit/Read/Write, else first arg
+        let args = payload.command || payload.file_path || "";
+        if (!args && payload.args) {
+          const a = payload.args;
+          if (a.cmd || a.workdir) args = `${a.cmd || ""}${a.workdir ? ` (${a.workdir})` : ""}`;
+          else args = JSON.stringify(a).slice(0, 120);
+        }
         turns.push({
           kind: "tool",
           tool: ev.tool_name || "tool",
           args,
-          summary: "",
+          file_path: payload.file_path,
+          command: payload.command,
+          full_args: payload.args || null,
+          ts,
         });
         break;
       }
       case "tool_result": {
         const text = payload.result_text || "";
-        if (text && turns.length) {
-          // attach to most recent tool turn as summary
-          for (let i = turns.length - 1; i >= 0; i--) {
-            if (turns[i].kind === "tool" && !turns[i].summary) {
-              turns[i].summary = text.slice(0, 120).replace(/\s+/g, " ");
-              break;
-            }
+        const isError = payload.is_error === true || (typeof ev.is_error === "number" && ev.is_error === 1);
+        // attach to most recent tool turn (full text + error flag)
+        for (let i = turns.length - 1; i >= 0; i--) {
+          if (turns[i].kind === "tool" && turns[i].result == null) {
+            turns[i].result = text;
+            turns[i].result_summary = (text || "").slice(0, 140).replace(/\s+/g, " ");
+            turns[i].is_error = isError;
+            turns[i].result_lines = text ? text.split("\n").length : 0;
+            turns[i].result_ts = ts;
+            break;
           }
         }
         break;

@@ -65,6 +65,17 @@
     /* Mobile back button visible */
     .rtv-sessions-back { display: inline-flex !important; }
   }
+
+  /* === Chat bubbles — wider on mobile, capped on desktop === */
+  .rtv-chat-bubble-user      { max-width: 78%; min-width: 0; }
+  .rtv-chat-bubble-assistant { max-width: 82%; min-width: 0; }
+  @media (max-width: 767px) {
+    .rtv-chat-bubble-user      { max-width: 92%; }
+    .rtv-chat-bubble-assistant { max-width: 92%; }
+    .rtv-chat-thread { max-height: calc(100vh - 220px) !important; }
+  }
+  .rtv-code-block { max-width: 100%; }
+  .rtv-code-block code { font-size: 12px; }
 </style>
 </head>
 <body>

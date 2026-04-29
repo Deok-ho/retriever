@@ -156,16 +156,19 @@ const TOOL_GLYPH = {
 
 function SessionChat({ s, onCopy, copied }) {
   // Live data from /api/sessions/:uid?events=1 takes priority when present.
-  const transcript = (Array.isArray(s.live_turns) && s.live_turns.length > 0)
+  const isLive = Array.isArray(s.live_turns) && s.live_turns.length > 0;
+  const transcript = isLive
     ? s.live_turns
     : (CHAT_TRANSCRIPTS[s.uid] || fallbackTranscript(s));
   const totalShown = transcript.length;
   const harnessLabel = s.harness === "claude_code" ? "Claude Code" : s.harness === "codex" ? "Codex" : s.harness;
 
-  // Rough timestamps interpolated across started_at → last_active
-  const start = new Date(s.started_at.replace(" ", "T")).getTime();
-  const end   = new Date(s.last_active.replace(" ", "T")).getTime();
-  const tsAt = (i) => {
+  // For mock turns w/o ts, fall back to interpolated time across started_at → last_active.
+  const start = new Date((s.started_at || "").replace(" ", "T")).getTime() || 0;
+  const end   = new Date((s.last_active || "").replace(" ", "T")).getTime() || start;
+  const tsAt = (m, i) => {
+    if (m.ts) return rtvFmtTimeLocal(m.ts);
+    if (!start) return "";
     const t = new Date(start + ((end - start) * i) / Math.max(1, totalShown - 1));
     return t.toISOString().slice(11, 16);
   };
@@ -180,6 +183,10 @@ function SessionChat({ s, onCopy, copied }) {
         <span>{s.started_at} → {s.ended_at || "(ongoing)"}</span>
         <span>·</span>
         <span>{s.events} total events</span>
+        {isLive && (
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px]"
+                style={{ background: "#E8F0EA", color: "#5A8C6F" }}>● live</span>
+        )}
         <span className="ml-auto inline-flex gap-1">
           <button onClick={() => onCopy(`rtv session show ${s.uid}`, `${s.uid}:cmd`)}
                   className="px-2 py-1 rounded border" style={{ borderColor: "#E8E6DE", background: "#FFFFFF", color: copied === `${s.uid}:cmd` ? "#5A8C6F" : "#5C5A55" }}>
@@ -190,11 +197,11 @@ function SessionChat({ s, onCopy, copied }) {
 
       {/* Conversation thread */}
       <div className="rounded-lg border overflow-hidden" style={{ borderColor: "#E8E6DE", background: "#F7F5EE" }}>
-        <div className="px-5 py-4 space-y-3 max-h-[640px] overflow-y-auto">
+        <div className="rtv-chat-thread px-3 sm:px-5 py-4 space-y-3 max-h-[70vh] overflow-y-auto">
           {transcript.map((m, i) => (
-            <ChatTurn key={i} m={m} ts={tsAt(i)} harness={s.harness}/>
+            <ChatTurn key={i} m={m} ts={tsAt(m, i)} harness={s.harness}/>
           ))}
-          {totalShown < s.events && (
+          {!isLive && totalShown < s.events && (
             <div className="text-center py-2 text-[10px] font-mono" style={{ color: "#A88467" }}>
               … {s.events - totalShown} more events not rendered (run <span className="text-[#1A1A1A]">rtv session show</span> for full)
             </div>
@@ -214,15 +221,52 @@ function SessionChat({ s, onCopy, copied }) {
   );
 }
 
+// "2026-04-29T17:08:18.123Z" → "17:08" (local-ish; KST already inside ISO)
+function rtvFmtTimeLocal(iso) {
+  if (!iso) return "";
+  const m = iso.match(/T(\d{2}:\d{2})/);
+  return m ? m[1] : "";
+}
+
+// Render text with fenced ```code``` blocks separated.
+function renderRichText(text) {
+  if (!text) return null;
+  // Split on ``` … ``` blocks, optionally with a language hint
+  const parts = [];
+  let lastIdx = 0;
+  const re = /```([a-zA-Z0-9_+-]*)\n?([\s\S]*?)```/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > lastIdx) parts.push({ kind: "text", value: text.slice(lastIdx, m.index) });
+    parts.push({ kind: "code", lang: m[1] || "", value: m[2] });
+    lastIdx = m.index + m[0].length;
+  }
+  if (lastIdx < text.length) parts.push({ kind: "text", value: text.slice(lastIdx) });
+  if (parts.length === 0) parts.push({ kind: "text", value: text });
+  return parts.map((p, i) => {
+    if (p.kind === "code") {
+      return (
+        <pre key={i} className="rtv-code-block my-2 p-2.5 rounded border overflow-x-auto text-[12px] font-mono leading-relaxed"
+             style={{ borderColor: "#E8E6DE", background: "#FDFCF7", color: "#1A1A1A" }}>
+          {p.lang && <div className="text-[10px] uppercase tracking-wider mb-1" style={{ color: "#A88467" }}>{p.lang}</div>}
+          <code style={{ whiteSpace: "pre" }}>{p.value}</code>
+        </pre>
+      );
+    }
+    // Plain text — preserve newlines but allow wrap
+    return <span key={i} style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{p.value}</span>;
+  });
+}
+
 function ChatTurn({ m, ts, harness }) {
   if (m.kind === "user") {
     return (
       <div className="flex justify-end">
-        <div className="max-w-[78%]">
+        <div className="rtv-chat-bubble-user">
           <div className="text-[10px] font-mono mb-1 text-right" style={{ color: "#8A8680" }}>you · {ts}</div>
           <div className="px-3.5 py-2.5 rounded-lg rounded-tr-sm text-[13px] leading-relaxed"
-               style={{ background: "#FBEFE8", color: "#1A1A1A", border: "1px solid #EDD4C2", whiteSpace: "pre-wrap" }}>
-            {m.text}
+               style={{ background: "#FBEFE8", color: "#1A1A1A", border: "1px solid #EDD4C2" }}>
+            {renderRichText(m.text)}
           </div>
         </div>
       </div>
@@ -240,13 +284,13 @@ function ChatTurn({ m, ts, harness }) {
                       border: `1px solid ${isClaudeCode ? "#EDD4C2" : "#CADBCF"}` }}>
           {isClaudeCode ? "C" : "X"}
         </div>
-        <div className="min-w-0 flex-1 max-w-[82%]">
+        <div className="min-w-0 flex-1 rtv-chat-bubble-assistant">
           <div className="text-[10px] font-mono mb-1" style={{ color: "#8A8680" }}>
             {isClaudeCode ? "Claude Code" : "Codex"} · {ts}
           </div>
           <div className="px-3.5 py-2.5 rounded-lg rounded-tl-sm text-[13px] leading-relaxed"
-               style={{ background: "#FFFFFF", border: "1px solid #E8E6DE", color: "#1A1A1A", whiteSpace: "pre-wrap" }}>
-            {m.text && <div>{m.text}</div>}
+               style={{ background: "#FFFFFF", border: "1px solid #E8E6DE", color: "#1A1A1A" }}>
+            {m.text && <div>{renderRichText(m.text)}</div>}
             {m.kind === "assistant_block" && (
               <div className="mt-2 rounded border overflow-hidden" style={{ borderColor: "#E8E6DE", background: "#FDFCF7" }}>
                 <div className="px-2.5 py-1.5 border-b text-[10px] font-mono uppercase tracking-wider"
@@ -265,11 +309,11 @@ function ChatTurn({ m, ts, harness }) {
       <div className="flex gap-2.5">
         <div className="w-7 h-7 flex-shrink-0 flex items-center justify-center text-[12px]"
              style={{ color: "#A88467" }}>◌</div>
-        <div className="min-w-0 flex-1 max-w-[82%]">
+        <div className="min-w-0 flex-1 rtv-chat-bubble-assistant">
           <div className="text-[10px] font-mono mb-1" style={{ color: "#A88467" }}>thinking · {ts}</div>
           <div className="px-3.5 py-2.5 rounded-lg text-[12px] leading-relaxed"
                style={{ background: "transparent", border: "1px dashed #D8D4C7", color: "#5C5A55", fontStyle: "italic" }}>
-            {m.text}
+            {renderRichText(m.text)}
           </div>
         </div>
       </div>
@@ -277,40 +321,77 @@ function ChatTurn({ m, ts, harness }) {
   }
 
   if (m.kind === "tool") {
-    const g = TOOL_GLYPH[m.tool] || { glyph: "▸", color: "#5C5A55" };
-    return (
-      <div className="flex gap-2.5">
-        <div className="w-7 h-7 flex-shrink-0 flex items-center justify-center text-[14px]"
-             style={{ color: g.color }}>{g.glyph}</div>
-        <div className="min-w-0 flex-1 max-w-[82%]">
-          <div className="rounded-lg border overflow-hidden"
-               style={{ borderColor: "#E8E6DE", background: "#FDFCF7" }}>
-            <div className="px-3 py-1.5 flex items-center gap-2 text-[11px] font-mono border-b"
-                 style={{ borderColor: "#F0EEE6", background: "#F7F5EE" }}>
-              <span className="font-semibold text-[#1A1A1A]">{m.tool}</span>
-              <span style={{ color: "#5C5A55", overflowWrap: "anywhere" }}>{m.args}</span>
-              <span className="ml-auto" style={{ color: "#8A8680" }}>{ts}</span>
-            </div>
-            {(m.summary || m.diff || m.result_lines) && (
-              <div className="px-3 py-2 text-[11px] font-mono flex items-center gap-3 flex-wrap"
-                   style={{ color: "#5C5A55" }}>
-                {m.diff && (
-                  <span className="inline-flex items-center gap-1">
-                    <span style={{ color: "#5A8C6F" }}>{m.diff.split(" ")[0]}</span>
-                    <span style={{ color: "#A83E3E" }}>{m.diff.split(" ")[1]}</span>
-                  </span>
-                )}
-                {m.result_lines && <span>{m.result_lines} lines read</span>}
-                {m.summary && <span className="text-[#1A1A1A]">↳ {m.summary}</span>}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    );
+    return <ToolTurn m={m} ts={ts}/>;
   }
 
   return null;
+}
+
+// Collapsible tool turn — header row always visible; result body toggles open.
+function ToolTurn({ m, ts }) {
+  const g = TOOL_GLYPH[m.tool] || { glyph: "▸", color: "#5C5A55" };
+  const hasResult = !!(m.result || m.result_lines || m.summary || m.diff);
+  const longResult = (m.result || "").length > 240 || (m.result_lines || 0) > 6;
+  const [open, setOpen] = React.useState(!longResult); // long results collapsed by default
+
+  return (
+    <div className="flex gap-2.5">
+      <div className="w-7 h-7 flex-shrink-0 flex items-center justify-center text-[14px]"
+           style={{ color: g.color }}>{g.glyph}</div>
+      <div className="min-w-0 flex-1 rtv-chat-bubble-assistant">
+        <div className="rounded-lg border overflow-hidden"
+             style={{ borderColor: m.is_error ? "#F0C9C0" : "#E8E6DE", background: "#FDFCF7" }}>
+          <button
+            type="button"
+            onClick={() => hasResult && setOpen(o => !o)}
+            className="w-full px-3 py-1.5 flex items-center gap-2 text-[11px] font-mono border-b text-left"
+            style={{
+              borderColor: "#F0EEE6",
+              background: m.is_error ? "#FBEAE6" : "#F7F5EE",
+              cursor: hasResult ? "pointer" : "default",
+            }}>
+            <span className="font-semibold text-[#1A1A1A]">{m.tool}</span>
+            <span style={{ color: m.is_error ? "#A83E3E" : "#5C5A55", overflowWrap: "anywhere" }}>
+              {m.args || ""}
+            </span>
+            <span className="ml-auto inline-flex items-center gap-1.5" style={{ color: "#8A8680" }}>
+              {m.is_error && <span style={{ color: "#A83E3E" }}>error</span>}
+              {hasResult && (
+                <span style={{ color: "#A88467" }}>{open ? "▾" : "▸"}</span>
+              )}
+              <span>{ts}</span>
+            </span>
+          </button>
+          {hasResult && open && (
+            <div className="text-[11px] font-mono leading-relaxed" style={{ color: "#1A1A1A" }}>
+              {/* Diff/summary inline (mock data) */}
+              {(m.diff || m.summary) && (
+                <div className="px-3 py-2 flex items-center gap-3 flex-wrap" style={{ color: "#5C5A55" }}>
+                  {m.diff && (
+                    <span className="inline-flex items-center gap-1">
+                      <span style={{ color: "#5A8C6F" }}>{m.diff.split(" ")[0]}</span>
+                      <span style={{ color: "#A83E3E" }}>{m.diff.split(" ")[1]}</span>
+                    </span>
+                  )}
+                  {m.summary && <span className="text-[#1A1A1A]">↳ {m.summary}</span>}
+                </div>
+              )}
+              {/* Live result text — full output, mono, max-h with scroll */}
+              {m.result && (
+                <pre className="px-3 py-2 m-0 max-h-[280px] overflow-auto"
+                     style={{
+                       background: "#FBFAF4",
+                       borderTop: "1px solid #F0EEE6",
+                       whiteSpace: "pre",
+                       color: m.is_error ? "#A83E3E" : "#1A1A1A",
+                     }}>{m.result}</pre>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 Object.assign(window, { SessionChat });
