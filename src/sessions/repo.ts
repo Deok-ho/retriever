@@ -274,9 +274,10 @@ export class SessionRepo {
   }
 
   search(query: string, filter: SearchFilter): SearchHit[] {
-    if (!query.trim()) return [];
+    const safe = sanitizeFtsQuery(query);
+    if (!safe) return [];
     const limit = Math.max(1, Math.min(filter.limit ?? 50, 200));
-    const params: unknown[] = [query];
+    const params: unknown[] = [safe];
     let extraJoin = "";
     const where: string[] = [];
     if (filter.machine_id) {
@@ -306,7 +307,7 @@ export class SessionRepo {
       LIMIT ?
     `;
     // Reorder params: MATCH binding first, then extra, then limit
-    const orderedParams = [query, ...params.slice(1), limit];
+    const orderedParams = [safe, ...params.slice(1), limit];
     return this.db.prepare(sql).all(...orderedParams) as SearchHit[];
   }
 
@@ -425,6 +426,43 @@ export class SessionRepo {
       )
       .all(...params) as FilesTouchedHit[];
   }
+}
+
+/**
+ * Convert an arbitrary user search string into a safe FTS5 query.
+ *
+ * FTS5 has its own mini-grammar (AND/OR/NOT/NEAR, quoted phrases, prefix `*`,
+ * column filters, `(` `)` grouping). Without escaping, a query like `bla"foo`
+ * or `: foo` raises `SQLITE_ERROR: fts5: syntax error` and surfaces as 500.
+ *
+ * Strategy:
+ *   - Split on whitespace into tokens.
+ *   - Drop reserved bareword operators (AND/OR/NOT/NEAR — uppercase only).
+ *   - Quote each token as a phrase, escaping any embedded `"` by doubling.
+ *   - Keep a trailing `*` prefix marker if the token already ended with one
+ *     (still valid FTS5 syntax outside quotes).
+ *   - Drop tokens that become empty after stripping. Empty result → no search.
+ */
+function sanitizeFtsQuery(raw: string): string {
+  if (!raw) return "";
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  const RESERVED = new Set(["AND", "OR", "NOT", "NEAR"]);
+  const tokens = trimmed.split(/\s+/);
+  const out: string[] = [];
+  for (const tok of tokens) {
+    if (RESERVED.has(tok)) continue; // strip bareword operators
+    let body = tok;
+    let prefix = false;
+    if (body.endsWith("*")) { prefix = true; body = body.slice(0, -1); }
+    // Strip characters FTS5 treats specially even inside our quote
+    body = body.replace(/^[\(\)\[\]:^*]+|[\(\)\[\]:^*]+$/g, "");
+    // Escape embedded double quotes by doubling (FTS5 phrase escape)
+    body = body.replace(/"/g, '""');
+    if (!body) continue;
+    out.push(`"${body}"${prefix ? "*" : ""}`);
+  }
+  return out.join(" ");
 }
 
 function extractText(payload_json: string | undefined): string {
