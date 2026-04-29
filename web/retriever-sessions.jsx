@@ -248,7 +248,9 @@ function SessionBrowser({ openAgent }) {
   const [liveSessions, setLiveSessions] = React.useState(null);
   const [liveStatus,   setLiveStatus]   = React.useState("loading");
   const [timeWin,      setTimeWin]      = React.useState("today"); // today | yesterday | 7d | 30d | all
-  const [searchHits,   setSearchHits]   = React.useState(null); // null = no FTS in effect; otherwise Set<session_uid>
+  // searchHits: null | Map<session_uid, { snippet: string, rank: number }>
+  // (Codex iter6 #5 fix — Set was discarding snippet/rank, leaving "어느 말이 매치됐는지" invisible.)
+  const [searchHits,   setSearchHits]   = React.useState(null);
   const [dailyDigest,  setDailyDigest]  = React.useState(null); // [{ ...session, summary }]
 
   // Refetch when time window changes
@@ -313,7 +315,9 @@ function SessionBrowser({ openAgent }) {
       try {
         const hits = await window.RTV_LIVE.searchSessions(q, { limit: 200 });
         if (cancelled) return;
-        setSearchHits(new Set(hits.map(h => h.session_uid)));
+        const map = new Map();
+        for (const h of hits) map.set(h.session_uid, { snippet: h.snippet, rank: h.rank });
+        setSearchHits(map);
       } catch {
         if (!cancelled) setSearchHits(null);
       }
@@ -399,7 +403,16 @@ function SessionBrowser({ openAgent }) {
     }
     return true;
   });
-  visibleSessions = visibleSessions.sort((a, b) => b.last_active.localeCompare(a.last_active));
+  // When FTS5 search is active, sort by rank (lower = more relevant). Otherwise by recency.
+  if (useLive && searchHits && searchHits.size > 0) {
+    visibleSessions = visibleSessions.sort((a, b) => {
+      const ra = searchHits.get(a.uid)?.rank ?? 0;
+      const rb = searchHits.get(b.uid)?.rank ?? 0;
+      return ra - rb;
+    });
+  } else {
+    visibleSessions = visibleSessions.sort((a, b) => b.last_active.localeCompare(a.last_active));
+  }
 
   const copy = (text, key) => {
     navigator.clipboard?.writeText(text);
@@ -608,12 +621,20 @@ function SessionBrowser({ openAgent }) {
                       );
                     })()}
                   </div>
-                  <div className="mt-1 text-[12px] text-[#1A1A1A] line-clamp-2 leading-snug">{s.summary}</div>
+                  {/* FTS5 snippet — shown only when search hit, replaces the generic summary line. */}
+                  {useLive && searchHits && searchHits.has(s.uid) ? (
+                    <SnippetLine snippet={searchHits.get(s.uid).snippet}/>
+                  ) : (
+                    s.summary && <div className="mt-1 text-[12px] text-[#1A1A1A] line-clamp-2 leading-snug">{s.summary}</div>
+                  )}
                   <div className="mt-1 flex items-center gap-2 text-[10px] font-mono flex-wrap" style={{ color: "#8A8680" }}>
                     <span>{s.events} events</span>
-                    <span>· active {fmtDur(s.active_seconds)}</span>
+                    {s.active_seconds > 0 && <span>· active {fmtDur(s.active_seconds)}</span>}
                     {(s.commit_shas || []).length > 0 && <span>· commits {(s.commit_shas || []).length}</span>}
                     {s.errors > 0 && <span style={{ color: "#A83E3E" }}>· {s.errors} err</span>}
+                    {useLive && searchHits && searchHits.has(s.uid) && (
+                      <span className="ml-auto" style={{ color: "#5A8C6F" }}>match</span>
+                    )}
                   </div>
                 </button>
               );
@@ -642,6 +663,34 @@ function SessionBrowser({ openAgent }) {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// SnippetLine — render an FTS5 snippet() result. Server uses `[`/`]` as match
+// delimiters and `…` as ellipsis. We split on those markers and wrap matched
+// fragments in <mark>. Long snippets are clamped to 3 lines via line-clamp.
+function SnippetLine({ snippet }) {
+  if (!snippet) return null;
+  const flat = snippet.replace(/\s+/g, " ").trim();
+  // Split on bracket markers, keeping the matched runs separate.
+  const parts = [];
+  const re = /\[([^\]]+)\]/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(flat)) !== null) {
+    if (m.index > last) parts.push({ kind: "text", value: flat.slice(last, m.index) });
+    parts.push({ kind: "hit", value: m[1] });
+    last = m.index + m[0].length;
+  }
+  if (last < flat.length) parts.push({ kind: "text", value: flat.slice(last) });
+  return (
+    <div className="mt-1.5 text-[12px] leading-snug rtv-snippet line-clamp-3" style={{ color: "#1A1A1A", overflowWrap: "anywhere" }}>
+      {parts.map((p, i) =>
+        p.kind === "hit"
+          ? <mark key={i} style={{ background: "#FBEFE8", color: "#8F4E2C", padding: "0 2px", borderRadius: 2 }}>{p.value}</mark>
+          : <span key={i}>{p.value}</span>
+      )}
     </div>
   );
 }
