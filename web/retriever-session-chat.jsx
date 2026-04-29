@@ -197,29 +197,134 @@ function SessionChat({ s, onCopy, copied }) {
 
       {/* Conversation thread */}
       <div className="rounded-lg border overflow-hidden" style={{ borderColor: "#E8E6DE", background: "#F7F5EE" }}>
-        <div className="rtv-chat-thread px-3 sm:px-5 py-4 space-y-3 max-h-[70vh] overflow-y-auto">
-          {transcript.map((m, i) => (
-            <ChatTurn key={i} m={m} ts={tsAt(m, i)} harness={s.harness}/>
-          ))}
-          {!isLive && totalShown < s.events && (
-            <div className="text-center py-2 text-[10px] font-mono" style={{ color: "#A88467" }}>
-              … {s.events - totalShown} more events not rendered (run <span className="text-[#1A1A1A]">rtv session show</span> for full)
+        {totalShown > 200 ? (
+          <VirtualizedThread transcript={transcript} harness={s.harness} tsAt={tsAt}/>
+        ) : (
+          <div className="rtv-chat-thread px-3 sm:px-5 py-4 space-y-3 max-h-[70vh] overflow-y-auto">
+            {transcript.map((m, i) => (
+              <ChatTurn key={i} m={m} ts={tsAt(m, i)} harness={s.harness}/>
+            ))}
+            {!isLive && totalShown < s.events && (
+              <div className="text-center py-2 text-[10px] font-mono" style={{ color: "#A88467" }}>
+                … {s.events - totalShown} more events not rendered (run <span className="text-[#1A1A1A]">rtv session show</span> for full)
+              </div>
+            )}
+            {/* Composer ghost */}
+            <div className="pt-2 mt-2 border-t flex items-center gap-2 text-[11px] font-mono"
+                 style={{ borderColor: "#E8E6DE", color: "#A88467" }}>
+              <span>›</span>
+              <span style={{ fontStyle: "italic" }}>
+                {s.status === "active" ? "session ongoing — open in harness to continue"
+                                       : "session archived — use Resume tab to reopen on another machine"}
+              </span>
             </div>
-          )}
-          {/* Composer ghost */}
-          <div className="pt-2 mt-2 border-t flex items-center gap-2 text-[11px] font-mono"
-               style={{ borderColor: "#E8E6DE", color: "#A88467" }}>
-            <span>›</span>
-            <span style={{ fontStyle: "italic" }}>
-              {s.status === "active" ? "session ongoing — open in harness to continue"
-                                     : "session archived — use Resume tab to reopen on another machine"}
-            </span>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
 }
+
+// === Virtual scroll for long threads (Codex 주의급 #10) =====================
+// Strategy: estimate per-turn height by kind, build prefix-sum offsets, then
+// render only turns whose y-range intersects the viewport (+ buffer). Avoids
+// mounting thousands of components for 18k-event sessions.
+
+/** Pure helper — returns estimated px height for a turn (constant per kind). */
+function rtvEstimateRowHeight(m) {
+  if (!m) return 80;
+  if (m.kind === "thinking") return 60;
+  if (m.kind === "tool") return 56; // collapsed by default
+  // user/assistant — roughly 80 + 18px per line above the first
+  const text = (m.text || "") + "";
+  const newlines = (text.match(/\n/g) || []).length;
+  const longLines = Math.floor(text.length / 80);
+  return 80 + Math.min(newlines + longLines, 30) * 18;
+}
+
+if (typeof window !== "undefined") window.rtvEstimateRowHeight = rtvEstimateRowHeight;
+
+function VirtualizedThread({ transcript, harness, tsAt }) {
+  const containerRef = React.useRef(null);
+  const [scrollTop, setScrollTop] = React.useState(0);
+  const [vpHeight, setVpHeight] = React.useState(600);
+  const BUFFER = 6;
+
+  // Prefix-sum offsets — recompute when transcript identity changes
+  const offsets = React.useMemo(() => {
+    const arr = new Array(transcript.length + 1);
+    arr[0] = 0;
+    for (let i = 0; i < transcript.length; i++) {
+      arr[i + 1] = arr[i] + rtvEstimateRowHeight(transcript[i]);
+    }
+    return arr;
+  }, [transcript]);
+  const totalHeight = offsets[transcript.length];
+
+  React.useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onScroll = () => setScrollTop(el.scrollTop);
+    const onResize = () => setVpHeight(el.clientHeight);
+    el.addEventListener("scroll", onScroll, { passive: true });
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onResize);
+    };
+  }, []);
+
+  // Binary search for first index whose end > scrollTop
+  const startIdx = Math.max(0, rtvBinarySearchOffset(offsets, scrollTop) - BUFFER);
+  const endIdx = Math.min(
+    transcript.length,
+    rtvBinarySearchOffset(offsets, scrollTop + vpHeight) + BUFFER
+  );
+
+  const padTop = offsets[startIdx];
+  const padBot = totalHeight - offsets[endIdx];
+  const visible = transcript.slice(startIdx, endIdx);
+
+  return (
+    <div
+      ref={containerRef}
+      className="rtv-chat-thread overflow-y-auto"
+      style={{ maxHeight: "70vh", position: "relative" }}>
+      {/* Top spacer */}
+      <div style={{ height: padTop }}/>
+      <div className="px-3 sm:px-5 space-y-3" style={{ paddingTop: 16, paddingBottom: 16 }}>
+        {visible.map((m, i) => (
+          <ChatTurn
+            key={startIdx + i}
+            m={m}
+            ts={tsAt(m, startIdx + i)}
+            harness={harness}/>
+        ))}
+      </div>
+      {/* Bottom spacer */}
+      <div style={{ height: padBot }}/>
+      {/* Footer info — pinned at bottom of virtualized area */}
+      <div className="px-3 sm:px-5 pt-2 pb-3 text-[10px] font-mono"
+           style={{ color: "#A88467" }}>
+        virtualized — {transcript.length} turns, rendering {visible.length}
+      </div>
+    </div>
+  );
+}
+
+/** Returns smallest i such that offsets[i+1] > target, i.e. the row containing y=target. */
+function rtvBinarySearchOffset(offsets, target) {
+  let lo = 0, hi = offsets.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (offsets[mid + 1] <= target) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+if (typeof window !== "undefined") window.rtvBinarySearchOffset = rtvBinarySearchOffset;
 
 // "2026-04-29T17:08:18.123Z" → "17:08" (local-ish; KST already inside ISO)
 function rtvFmtTimeLocal(iso) {
