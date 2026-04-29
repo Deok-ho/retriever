@@ -249,6 +249,7 @@ function SessionBrowser({ openAgent }) {
   const [liveStatus,   setLiveStatus]   = React.useState("loading");
   const [timeWin,      setTimeWin]      = React.useState("today"); // today | yesterday | 7d | 30d | all
   const [searchHits,   setSearchHits]   = React.useState(null); // null = no FTS in effect; otherwise Set<session_uid>
+  const [dailyDigest,  setDailyDigest]  = React.useState(null); // [{ ...session, summary }]
 
   // Refetch when time window changes
   React.useEffect(() => {
@@ -272,6 +273,31 @@ function SessionBrowser({ openAgent }) {
         setLiveStatus("error");
         setLiveSessions([]);
         console.warn("[retriever] live sessions fetch failed:", e.message || e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [timeWin]);
+
+  // Daily digest fetch — only when timeWin is today/yesterday
+  React.useEffect(() => {
+    if (!window.RTV_LIVE) { setDailyDigest(null); return; }
+    if (timeWin !== "today" && timeWin !== "yesterday") { setDailyDigest(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const since = window.RTV_LIVE.sinceFromWindow(timeWin);
+        const until = timeWin === "yesterday"
+          ? window.RTV_LIVE.untilFromWindow("yesterday")
+          : new Date().toISOString();
+        if (!since || !until) return;
+        const r = await window.RTV_LIVE.fetchDaily({ since, until, limit: 50 });
+        if (cancelled) return;
+        setDailyDigest(r.sessions || []);
+      } catch (e) {
+        if (!cancelled) {
+          setDailyDigest(null);
+          console.warn("[retriever] daily digest fetch failed:", e.message || e);
+        }
       }
     })();
     return () => { cancelled = true; };
@@ -448,6 +474,18 @@ function SessionBrowser({ openAgent }) {
         </div>
       )}
 
+      {/* Daily digest — only when timeWin is today/yesterday and live mode */}
+      {useLive && dailyDigest && dailyDigest.length > 0 && (timeWin === "today" || timeWin === "yesterday") && (
+        <DailyDigestPanel
+          digest={dailyDigest}
+          label={timeWin === "today" ? "오늘 한 일" : "어제 한 일"}
+          onPick={(uid) => {
+            const s = ALL_SESSIONS.find(x => x.uid === uid);
+            if (s) setSession(s);
+          }}
+        />
+      )}
+
       {/* Filter bar — machine / repo / branch as compact dropdowns + search + harness + status */}
       <div className="mb-3 p-2.5 rounded-md border flex items-center gap-2 flex-wrap"
            style={{ borderColor: "#E8E6DE", background: "#FDFCF7" }}>
@@ -584,6 +622,90 @@ function SessionBrowser({ openAgent }) {
             </Card>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function DailyDigestPanel({ digest, label, onPick }) {
+  const totalEvents = digest.reduce((a, s) => a + (s.events_total || 0), 0);
+  const totalErrors = digest.reduce((a, s) => a + (s.summary?.errors_count || 0), 0);
+  const totalSeconds = digest.reduce((a, s) => a + (s.summary?.duration_seconds || 0), 0);
+  return (
+    <div className="mb-4 rounded-lg border overflow-hidden"
+         style={{ borderColor: "#EDD4C2", background: "linear-gradient(180deg, #FBEFE8 0%, #FDFCF7 100%)" }}>
+      <div className="px-4 py-2.5 border-b flex items-center gap-2 flex-wrap text-[12px] font-mono"
+           style={{ borderColor: "#EDD4C2", color: "#8F4E2C" }}>
+        <span className="font-semibold text-[14px] text-[#1A1A1A]">{label}</span>
+        <span style={{ color: "#A88467" }}>·</span>
+        <span>{digest.length} session{digest.length === 1 ? "" : "s"}</span>
+        <span style={{ color: "#A88467" }}>·</span>
+        <span>{totalEvents} events</span>
+        {totalSeconds > 0 && (
+          <>
+            <span style={{ color: "#A88467" }}>·</span>
+            <span>active ~{Math.round(totalSeconds / 60)}m</span>
+          </>
+        )}
+        {totalErrors > 0 && (
+          <span className="ml-auto inline-flex items-center gap-1" style={{ color: "#A83E3E" }}>● {totalErrors} errors</span>
+        )}
+      </div>
+      <div className="p-2 space-y-1.5">
+        {digest.slice(0, 12).map((s) => {
+          const cwdShort = (s.cwd_at_start || "").split("/").filter(Boolean).slice(-2).join("/") || "(no-cwd)";
+          const tools = Object.entries(s.summary?.tool_counts || {})
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 4);
+          const dur = s.summary?.duration_seconds || 0;
+          const last = (s.last_active_at || "").slice(11, 16);
+          const harnessStyle = s.harness === "claude_code"
+            ? { color: "#8F4E2C", bg: "#FBEFE8" }
+            : { color: "#5A8C6F", bg: "#E8F0EA" };
+          return (
+            <button key={s.session_uid} onClick={() => onPick(s.session_uid)}
+              className="w-full text-left rounded-md p-2.5 border block transition hover:shadow-sm"
+              style={{ borderColor: "#E8E6DE", background: "#FFFFFF" }}>
+              <div className="flex items-center gap-1.5 flex-wrap text-[11px] font-mono">
+                <span className="px-1.5 py-0.5 rounded" style={{ color: harnessStyle.color, background: harnessStyle.bg }}>
+                  {s.harness}
+                </span>
+                <span className="text-[#1A1A1A]">{cwdShort}</span>
+                <span style={{ color: "#A88467" }}>·</span>
+                <span style={{ color: "#5C5A55" }}>{Math.round(dur / 60)}m</span>
+                <span style={{ color: "#A88467" }}>·</span>
+                <span style={{ color: "#5C5A55" }}>{s.events_total || 0} events</span>
+                {s.summary?.errors_count > 0 && (
+                  <span className="px-1 py-0.5 rounded" style={{ color: "#A83E3E", background: "#FBEAE6" }}>● {s.summary.errors_count} err</span>
+                )}
+                <span className="ml-auto" style={{ color: "#8A8680" }}>{last}</span>
+              </div>
+              {s.summary?.first_user_msg && (
+                <div className="mt-1.5 text-[12px] line-clamp-2" style={{ color: "#1A1A1A", overflowWrap: "anywhere" }}>
+                  <span style={{ color: "#A88467" }}>›</span> {s.summary.first_user_msg}
+                </div>
+              )}
+              {s.summary?.last_assistant_msg && (
+                <div className="mt-1 text-[11px] line-clamp-2" style={{ color: "#5C5A55", overflowWrap: "anywhere" }}>
+                  <span style={{ color: s.harness === "claude_code" ? "#8F4E2C" : "#5A8C6F" }}>↳</span> {s.summary.last_assistant_msg}
+                </div>
+              )}
+              {tools.length > 0 && (
+                <div className="mt-1.5 flex items-center gap-1.5 flex-wrap text-[10px] font-mono" style={{ color: "#8A8680" }}>
+                  {tools.map(([t, n]) => (
+                    <span key={t} className="px-1.5 py-0.5 rounded"
+                          style={{ background: "#F3F1EC", color: "#5C5A55" }}>{t} ×{n}</span>
+                  ))}
+                </div>
+              )}
+            </button>
+          );
+        })}
+        {digest.length > 12 && (
+          <div className="text-center py-1.5 text-[10px] font-mono" style={{ color: "#A88467" }}>
+            +{digest.length - 12} more — 아래 목록에서 전체 확인
+          </div>
+        )}
       </div>
     </div>
   );

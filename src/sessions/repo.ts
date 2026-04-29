@@ -65,6 +65,26 @@ export interface FilesTouchedHit extends SessionRow {
   touch_count: number;
 }
 
+export interface SessionSummary {
+  first_user_msg: string;
+  last_assistant_msg: string;
+  tool_counts: Record<string, number>;
+  errors_count: number;
+  duration_seconds: number;
+}
+
+export interface DailyDigestRow extends SessionRow {
+  summary: SessionSummary;
+}
+
+export interface DailyDigestFilter {
+  since: string;
+  until: string;
+  machine_id?: string;
+  harness?: Harness;
+  limit?: number;
+}
+
 export class SessionRepo {
   constructor(private db: Database.Database) {}
 
@@ -290,6 +310,98 @@ export class SessionRepo {
     return this.db.prepare(sql).all(...orderedParams) as SearchHit[];
   }
 
+  /**
+   * Per-session digest for "오늘 한 일" review:
+   *   - first_user_msg: text of earliest user_msg (truncated)
+   *   - last_assistant_msg: text of latest assistant_msg (truncated)
+   *   - tool_counts: { ToolName: N } from tool_use events
+   *   - errors_count: count of tool_result events with is_error=1
+   *   - duration_seconds: last_active_at − started_at on the row
+   */
+  summarize(session_uid: string): SessionSummary | null {
+    const session = this.db
+      .prepare("SELECT started_at, last_active_at FROM sessions WHERE session_uid = ?")
+      .get(session_uid) as { started_at: string; last_active_at: string } | undefined;
+    if (!session) return null;
+    const firstUser = this.db
+      .prepare(
+        `SELECT payload_json FROM session_events
+         WHERE session_uid = ? AND event_type = 'user_msg'
+         ORDER BY seq ASC LIMIT 1`
+      )
+      .get(session_uid) as { payload_json: string } | undefined;
+    const lastAssistant = this.db
+      .prepare(
+        `SELECT payload_json FROM session_events
+         WHERE session_uid = ? AND event_type = 'assistant_msg'
+         ORDER BY seq DESC LIMIT 1`
+      )
+      .get(session_uid) as { payload_json: string } | undefined;
+    const toolRows = this.db
+      .prepare(
+        `SELECT tool_name, COUNT(*) AS c FROM session_events
+         WHERE session_uid = ? AND event_type = 'tool_use' AND tool_name IS NOT NULL
+         GROUP BY tool_name`
+      )
+      .all(session_uid) as { tool_name: string; c: number }[];
+    const errorsCount = (
+      this.db
+        .prepare(
+          `SELECT COUNT(*) AS c FROM session_events
+           WHERE session_uid = ? AND event_type = 'tool_result' AND is_error = 1`
+        )
+        .get(session_uid) as { c: number }
+    ).c;
+
+    const tool_counts: Record<string, number> = {};
+    for (const r of toolRows) tool_counts[r.tool_name] = r.c;
+
+    const startedMs = Date.parse(session.started_at);
+    const lastMs = Date.parse(session.last_active_at);
+    const duration_seconds = Math.max(
+      0,
+      Math.round((isFinite(lastMs) && isFinite(startedMs) ? lastMs - startedMs : 0) / 1000)
+    );
+
+    return {
+      first_user_msg: truncate(extractText(firstUser?.payload_json), 280),
+      last_assistant_msg: truncate(extractText(lastAssistant?.payload_json), 280),
+      tool_counts,
+      errors_count: errorsCount,
+      duration_seconds,
+    };
+  }
+
+  /**
+   * Daily digest — sessions whose last_active_at falls within [since, until],
+   * each row enriched with a SessionSummary. Ordered by last_active_at desc.
+   */
+  dailyDigest(filter: DailyDigestFilter): DailyDigestRow[] {
+    const where: string[] = ["last_active_at >= ?", "last_active_at <= ?"];
+    const params: unknown[] = [filter.since, filter.until];
+    if (filter.machine_id) {
+      where.push("machine_id = ?");
+      params.push(filter.machine_id);
+    }
+    if (filter.harness) {
+      where.push("harness = ?");
+      params.push(filter.harness);
+    }
+    const limit = Math.max(1, Math.min(filter.limit ?? 100, 500));
+    const sessions = this.db
+      .prepare(
+        `SELECT * FROM sessions WHERE ${where.join(" AND ")}
+         ORDER BY last_active_at DESC LIMIT ?`
+      )
+      .all(...params, limit) as SessionRow[];
+    return sessions.map((s) => ({
+      ...s,
+      summary: this.summarize(s.session_uid)!,
+    }));
+  }
+
+
+
   filesTouched(
     file_path: string,
     filter: { limit?: number; project_id?: string }
@@ -313,4 +425,19 @@ export class SessionRepo {
       )
       .all(...params) as FilesTouchedHit[];
   }
+}
+
+function extractText(payload_json: string | undefined): string {
+  if (!payload_json) return "";
+  try {
+    const obj = JSON.parse(payload_json) as { text?: string };
+    return typeof obj.text === "string" ? obj.text : "";
+  } catch {
+    return "";
+  }
+}
+
+function truncate(s: string, n: number): string {
+  if (!s) return "";
+  return s.length <= n ? s : s.slice(0, n - 1) + "…";
 }

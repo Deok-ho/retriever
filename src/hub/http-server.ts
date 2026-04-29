@@ -201,6 +201,21 @@ async function serveApi(
       });
       return jsonRes(res, 200, { query, hits });
     }
+    if (p === "/api/sessions/daily") {
+      const since = q.get("since");
+      const until = q.get("until");
+      if (!since || !until) {
+        return jsonRes(res, 400, { error: "missing since/until" });
+      }
+      const rows = hub.sessions.dailyDigest({
+        since,
+        until,
+        machine_id: q.get("machine_id") ?? undefined,
+        harness: (q.get("harness") as never) ?? undefined,
+        limit: numParam(q.get("limit"), 100),
+      });
+      return jsonRes(res, 200, { since, until, sessions: rows });
+    }
     if (p === "/api/sessions/files") {
       const file_path = q.get("file_path") ?? "";
       if (!file_path) return jsonRes(res, 400, { error: "missing file_path" });

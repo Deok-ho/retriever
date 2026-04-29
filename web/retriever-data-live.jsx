@@ -103,6 +103,20 @@ function rtvUntilFromWindow(win) {
   return startOfKstDay.toISOString();
 }
 
+async function rtvFetchDaily(opts) {
+  if (!opts || !opts.since || !opts.until) throw new Error("rtvFetchDaily: missing since/until");
+  const params = new URLSearchParams();
+  params.set("since", opts.since);
+  params.set("until", opts.until);
+  if (opts.machine_id) params.set("machine_id", opts.machine_id);
+  if (opts.harness) params.set("harness", opts.harness);
+  if (opts.limit) params.set("limit", String(opts.limit));
+  const url = `${RTV_API_BASE}/sessions/daily?${params}`;
+  const r = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return await r.json();
+}
+
 async function rtvFetchLiveSessionDetail(uid, opts = {}) {
   const params = new URLSearchParams();
   params.set("events", "1");
@@ -202,6 +216,7 @@ window.RTV_LIVE = {
   fetchSessions: rtvFetchLiveSessions,
   searchSessions: rtvSearchLiveSessions,
   fetchDetail: rtvFetchLiveSessionDetail,
+  fetchDaily: rtvFetchDaily,
   eventsToTurns: rtvEventsToTurns,
   filesFromEvents: rtvFilesFromEvents,
   summaryFromEvents: rtvSummaryFromEvents,

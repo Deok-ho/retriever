@@ -133,3 +133,68 @@ describe("HTTP /api/sessions* (read-only viewer)", () => {
     expect(r.status).toBe(400);
   });
 });
+
+describe("HTTP /api/sessions/daily", () => {
+  let tmp: string;
+  let hub: import("../../src/hub/service.js").HubService;
+  let handle: import("../../src/hub/http-server.js").HubHttpHandle;
+
+  beforeAll(async () => {
+    const { HubService } = await import("../../src/hub/service.js");
+    const { startHubHttpServer } = await import("../../src/hub/http-server.js");
+    const { createMcpServer } = await import("../../src/server.js");
+    const { loadConfig } = await import("../../src/config.js");
+    tmp = (await import("node:fs")).mkdtempSync((await import("node:path")).join((await import("node:os")).tmpdir(), "rtv-api-daily-"));
+    hub = new HubService({
+      dbPath: (await import("node:path")).join(tmp, "hub.db"),
+      attachmentsDir: (await import("node:path")).join(tmp, "attachments"),
+    });
+    hub.sessions.mirror({
+      machine_id: "ms-m4x-001",
+      harness: "claude_code",
+      native_id: "daily-1",
+      started_at: "2026-04-30T01:00:00Z",
+      last_active_at: "2026-04-30T01:30:00Z",
+      transcript_content: "x",
+      content_hash: "h",
+      events: [
+        { seq: 0, ts: "2026-04-30T01:00:00Z", event_type: "user_msg", payload: { text: "today's task" } },
+        { seq: 1, ts: "2026-04-30T01:01:00Z", event_type: "tool_use", tool_name: "Bash", payload: { command: "ls", args: {} } },
+        { seq: 2, ts: "2026-04-30T01:02:00Z", event_type: "assistant_msg", payload: { text: "done" } },
+      ],
+    });
+    const config = loadConfig();
+    handle = await startHubHttpServer({
+      serverFactory: () => createMcpServer({ config, hub, mode: "hub" }),
+      hub,
+      port: 0,
+      host: "127.0.0.1",
+    });
+  });
+
+  afterAll(async () => {
+    await handle.close();
+    hub.close();
+    const fs = await import("node:fs");
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test("GET /api/sessions/daily returns sessions with summary", async () => {
+    const r = await fetch(
+      `http://127.0.0.1:${handle.port}/api/sessions/daily?since=2026-04-30T00:00:00Z&until=2026-04-30T23:59:59Z`
+    );
+    expect(r.status).toBe(200);
+    const body = await r.json() as {
+      sessions: Array<{ session_uid: string; summary: { first_user_msg: string; last_assistant_msg: string; tool_counts: Record<string, number> } }>;
+    };
+    expect(body.sessions).toHaveLength(1);
+    expect(body.sessions[0].summary.first_user_msg).toBe("today's task");
+    expect(body.sessions[0].summary.last_assistant_msg).toBe("done");
+    expect(body.sessions[0].summary.tool_counts).toEqual({ Bash: 1 });
+  });
+
+  test("400 when since/until missing", async () => {
+    const r = await fetch(`http://127.0.0.1:${handle.port}/api/sessions/daily`);
+    expect(r.status).toBe(400);
+  });
+});
