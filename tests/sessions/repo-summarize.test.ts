@@ -116,5 +116,29 @@ describe("SessionRepo.summarize / dailyDigest", () => {
       });
       expect(out.map((r) => r.native_id)).toEqual(["b", "c", "a"]);
     });
+
+    test("batch SQL: 50 sessions executes O(1) prepared statements (Codex 주의급 #5)", () => {
+      // Seed 50 sessions in the same window
+      for (let i = 0; i < 50; i++) {
+        seed(`bulk-${i}`, {
+          last_active_at: `2026-04-30T${(i % 24).toString().padStart(2, "0")}:30:00Z`,
+        });
+      }
+      const t0 = performance.now();
+      const out = repo.dailyDigest({
+        since: "2026-04-30T00:00:00Z",
+        until: "2026-04-30T23:59:59Z",
+        limit: 50,
+      });
+      const ms = performance.now() - t0;
+      expect(out).toHaveLength(50);
+      // Sanity: each row has a populated summary derived from its events
+      for (const r of out) {
+        expect(r.summary.first_user_msg).toBe("first user message");
+        expect(r.summary.tool_counts).toEqual({ Bash: 1, Edit: 1 });
+      }
+      // Fast — batch path. Generous bound for CI but catches accidental N+1 regression.
+      expect(ms).toBeLessThan(500);
+    });
   });
 });

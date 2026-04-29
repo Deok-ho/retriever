@@ -376,6 +376,11 @@ export class SessionRepo {
   /**
    * Daily digest — sessions whose last_active_at falls within [since, until],
    * each row enriched with a SessionSummary. Ordered by last_active_at desc.
+   *
+   * Performance: previously called {@link summarize} per session = O(N×4)
+   * round-trips. Now uses 4 batch aggregates (first_user_msg / last_assistant_msg /
+   * tool_counts / errors_count) over the windowed session_uid set, joined in
+   * memory. Codex 주의급 #5 fix.
    */
   dailyDigest(filter: DailyDigestFilter): DailyDigestRow[] {
     const where: string[] = ["last_active_at >= ?", "last_active_at <= ?"];
@@ -395,10 +400,90 @@ export class SessionRepo {
          ORDER BY last_active_at DESC LIMIT ?`
       )
       .all(...params, limit) as SessionRow[];
-    return sessions.map((s) => ({
-      ...s,
-      summary: this.summarize(s.session_uid)!,
-    }));
+    if (sessions.length === 0) return [];
+
+    const uids = sessions.map((s) => s.session_uid);
+    const placeholders = uids.map(() => "?").join(",");
+
+    // Batch #1 — first user_msg per session (correlated MIN(seq) trick).
+    const firstUserRows = this.db
+      .prepare(
+        `SELECT e.session_uid, e.payload_json
+         FROM session_events e
+         INNER JOIN (
+           SELECT session_uid, MIN(seq) AS seq
+           FROM session_events
+           WHERE event_type = 'user_msg' AND session_uid IN (${placeholders})
+           GROUP BY session_uid
+         ) m ON m.session_uid = e.session_uid AND m.seq = e.seq
+         WHERE e.event_type = 'user_msg'`
+      )
+      .all(...uids) as { session_uid: string; payload_json: string }[];
+    const firstUser = new Map(firstUserRows.map((r) => [r.session_uid, r.payload_json]));
+
+    // Batch #2 — last assistant_msg per session.
+    const lastAsstRows = this.db
+      .prepare(
+        `SELECT e.session_uid, e.payload_json
+         FROM session_events e
+         INNER JOIN (
+           SELECT session_uid, MAX(seq) AS seq
+           FROM session_events
+           WHERE event_type = 'assistant_msg' AND session_uid IN (${placeholders})
+           GROUP BY session_uid
+         ) m ON m.session_uid = e.session_uid AND m.seq = e.seq
+         WHERE e.event_type = 'assistant_msg'`
+      )
+      .all(...uids) as { session_uid: string; payload_json: string }[];
+    const lastAsst = new Map(lastAsstRows.map((r) => [r.session_uid, r.payload_json]));
+
+    // Batch #3 — tool_counts.
+    const toolRows = this.db
+      .prepare(
+        `SELECT session_uid, tool_name, COUNT(*) AS c
+         FROM session_events
+         WHERE event_type = 'tool_use' AND tool_name IS NOT NULL
+           AND session_uid IN (${placeholders})
+         GROUP BY session_uid, tool_name`
+      )
+      .all(...uids) as { session_uid: string; tool_name: string; c: number }[];
+    const toolCounts = new Map<string, Record<string, number>>();
+    for (const r of toolRows) {
+      let bag = toolCounts.get(r.session_uid);
+      if (!bag) { bag = {}; toolCounts.set(r.session_uid, bag); }
+      bag[r.tool_name] = r.c;
+    }
+
+    // Batch #4 — errors_count.
+    const errorRows = this.db
+      .prepare(
+        `SELECT session_uid, COUNT(*) AS c
+         FROM session_events
+         WHERE event_type = 'tool_result' AND is_error = 1
+           AND session_uid IN (${placeholders})
+         GROUP BY session_uid`
+      )
+      .all(...uids) as { session_uid: string; c: number }[];
+    const errorCounts = new Map(errorRows.map((r) => [r.session_uid, r.c]));
+
+    return sessions.map((s) => {
+      const startedMs = Date.parse(s.started_at);
+      const lastMs = Date.parse(s.last_active_at);
+      const duration_seconds = Math.max(
+        0,
+        Math.round(
+          (isFinite(lastMs) && isFinite(startedMs) ? lastMs - startedMs : 0) / 1000
+        )
+      );
+      const summary: SessionSummary = {
+        first_user_msg: truncate(extractText(firstUser.get(s.session_uid)), 280),
+        last_assistant_msg: truncate(extractText(lastAsst.get(s.session_uid)), 280),
+        tool_counts: toolCounts.get(s.session_uid) ?? {},
+        errors_count: errorCounts.get(s.session_uid) ?? 0,
+        duration_seconds,
+      };
+      return { ...s, summary };
+    });
   }
 
 
