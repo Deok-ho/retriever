@@ -251,6 +251,8 @@ function SessionBrowser({ openAgent }) {
   // searchHits: null | Map<session_uid, { snippet: string, rank: number }>
   // (Codex iter6 #5 fix — Set was discarding snippet/rank, leaving "어느 말이 매치됐는지" invisible.)
   const [searchHits,   setSearchHits]   = React.useState(null);
+  const [searchError,  setSearchError]  = React.useState(null); // string | null — server-side FTS failure
+  const [searchBusy,   setSearchBusy]   = React.useState(false); // pending fetch state
   const [dailyDigest,  setDailyDigest]  = React.useState(null); // [{ ...session, summary }]
 
   // Refetch when time window changes
@@ -309,8 +311,12 @@ function SessionBrowser({ openAgent }) {
   React.useEffect(() => {
     if (!window.RTV_LIVE) return;
     const q = (filter.q || "").trim();
-    if (q.length < 2) { setSearchHits(null); return; }
+    if (q.length < 2) {
+      setSearchHits(null); setSearchError(null); setSearchBusy(false);
+      return;
+    }
     let cancelled = false;
+    setSearchBusy(true);
     const t = setTimeout(async () => {
       try {
         const hits = await window.RTV_LIVE.searchSessions(q, { limit: 200 });
@@ -318,8 +324,16 @@ function SessionBrowser({ openAgent }) {
         const map = new Map();
         for (const h of hits) map.set(h.session_uid, { snippet: h.snippet, rank: h.rank });
         setSearchHits(map);
-      } catch {
-        if (!cancelled) setSearchHits(null);
+        setSearchError(null);
+        setSearchBusy(false);
+      } catch (e) {
+        // Codex post-accept #3 — surface server-side failure instead of silent fallback.
+        // Common case: FTS5 syntax error from quotes/operators in user input.
+        if (!cancelled) {
+          setSearchHits(null);
+          setSearchError(e?.message || "search failed");
+          setSearchBusy(false);
+        }
       }
     }, 300);
     return () => { cancelled = true; clearTimeout(t); };
@@ -566,13 +580,30 @@ function SessionBrowser({ openAgent }) {
         <input
           value={filter.q}
           onChange={(e) => setFilter({ ...filter, q: e.target.value })}
-          placeholder={useLive ? "🔍 본문 검색 (FTS5)" : "🔍 summary · file · uid"}
+          placeholder={isLoading ? "loading…" : useLive ? "🔍 본문 검색 (FTS5)" : "🔍 summary · file · uid"}
+          disabled={isLoading}
+          aria-busy={isLoading || searchBusy}
           className="text-[12px] font-mono px-2.5 py-1.5 rounded border ml-auto flex-1 min-w-[160px] sm:flex-initial sm:w-[260px]"
-          style={{ borderColor: "#E8E6DE", background: "#FFFFFF", color: "#1A1A1A" }}/>
+          style={{
+            borderColor: "#E8E6DE",
+            background: isLoading ? "#F7F5EE" : "#FFFFFF",
+            color: "#1A1A1A",
+            opacity: isLoading ? 0.6 : 1,
+          }}/>
         {useLive && filter.q.trim().length >= 2 && (
           <span className="text-[10px] font-mono px-1.5 py-0.5 rounded"
-                style={{ color: searchHits ? "#5A8C6F" : "#A88467", background: "#F3F1EC" }}>
-            {searchHits ? `FTS5 · ${searchHits.size} match` : "검색 중…"}
+                title={searchError || undefined}
+                style={{
+                  color: searchError ? "#A83E3E" : searchHits ? "#5A8C6F" : "#A88467",
+                  background: searchError ? "#FBEAE6" : "#F3F1EC",
+                }}>
+            {searchError
+              ? `검색 실패 — ${searchError.length > 40 ? searchError.slice(0, 40) + "…" : searchError}`
+              : searchBusy
+                ? "검색 중…"
+                : searchHits
+                  ? `FTS5 · ${searchHits.size} match`
+                  : "검색 준비"}
           </span>
         )}
         {(machine || repo || branch || filter.harness !== "all" || filter.status !== "all" || filter.q) && (
@@ -583,7 +614,7 @@ function SessionBrowser({ openAgent }) {
       </div>
 
       {/* Body: sessions list (left) + detail (right). Mobile = stacked, list↔detail toggle. */}
-      <div className="rtv-sessions-body grid gap-3" style={{ minHeight: 600 }}>
+      <div className="rtv-sessions-body grid gap-3" style={{ minHeight: 600 }} aria-busy={isLoading}>
         <Card className={`p-0 overflow-hidden ${session ? "rtv-sessions-list-when-detail" : ""}`}>
           <ColHeader>sessions · {visibleSessions.length}</ColHeader>
           <div className="p-1.5 max-h-[760px] overflow-auto">
@@ -600,9 +631,23 @@ function SessionBrowser({ openAgent }) {
             )}
             {!isLoading && visibleSessions.length === 0 && (
               <div className="px-3 py-8 text-center text-[11px] font-mono" style={{ color: "#8A8680" }}>
-                {useLive && ALL_SESSIONS.length === 0
-                  ? `이 시간 윈도(${timeWin})에 ${searchHits ? "매치되는 " : ""}세션 없음`
-                  : "no sessions match"}
+                {/* Codex post-accept #2 — distinct messages per state */}
+                {(() => {
+                  if (useLive) {
+                    if (ALL_SESSIONS.length === 0) {
+                      // API 응답 도착 + 0건
+                      return `조회 완료 — 이 시간 윈도(${timeWin})에 세션 0건`;
+                    }
+                    if (searchHits && searchHits.size === 0) {
+                      return `검색 매치 0건 — “${filter.q.trim()}”`;
+                    }
+                    if (searchError) {
+                      return `검색 실패 — 필터 조건 변경 필요`;
+                    }
+                    return "필터 조건에 매치되는 세션 없음";
+                  }
+                  return "no sessions match";
+                })()}
               </div>
             )}
             {visibleSessions.map(s => {
