@@ -228,10 +228,11 @@ function rtvFmtTimeLocal(iso) {
   return m ? m[1] : "";
 }
 
-// Render text with fenced ```code``` blocks separated.
+// Render text with fenced ```code``` blocks + inline markdown (code, bold, links).
+// Italic intentionally not supported — `*` is too prone to false matches in
+// Korean / bullet text. All output uses React nodes (never innerHTML) so XSS is impossible.
 function renderRichText(text) {
   if (!text) return null;
-  // Split on ``` … ``` blocks, optionally with a language hint
   const parts = [];
   let lastIdx = 0;
   const re = /```([a-zA-Z0-9_+-]*)\n?([\s\S]*?)```/g;
@@ -253,8 +254,96 @@ function renderRichText(text) {
         </pre>
       );
     }
-    // Plain text — preserve newlines but allow wrap
-    return <span key={i} style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{p.value}</span>;
+    return (
+      <span key={i} style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+        {renderInlineMarkdown(p.value)}
+      </span>
+    );
+  });
+}
+
+/**
+ * Pure tokenizer — splits text into a flat array of inline tokens.
+ * Exported on window so it's directly unit-testable from Node (no React deps).
+ *
+ *   tokens = [{ kind: "text"|"code"|"bold"|"link", value, url? }, ...]
+ *
+ * Italic intentionally absent (Korean/bullet false-match risk).
+ */
+function rtvTokenizeInlineMd(s) {
+  if (!s) return [];
+  const out = [];
+  let i = 0;
+  while (i < s.length) {
+    let earliest = -1;
+    let pick = null;
+    for (const kind of ["code", "bold", "link"]) {
+      const m = rtvMatchAt(s, i, kind);
+      if (m && (earliest === -1 || m.start < earliest)) {
+        earliest = m.start;
+        pick = { kind, ...m };
+      }
+    }
+    if (!pick) {
+      if (i < s.length) out.push({ kind: "text", value: s.slice(i) });
+      break;
+    }
+    if (pick.start > i) out.push({ kind: "text", value: s.slice(i, pick.start) });
+    out.push(pick.kind === "link"
+      ? { kind: "link", value: pick.body, url: pick.url }
+      : { kind: pick.kind, value: pick.body });
+    i = pick.end;
+  }
+  return out;
+}
+
+function rtvMatchAt(s, from, kind) {
+  if (kind === "code") {
+    const re = /`([^`\n]+)`/g; re.lastIndex = from;
+    const m = re.exec(s);
+    return m ? { start: m.index, end: m.index + m[0].length, body: m[1] } : null;
+  }
+  if (kind === "bold") {
+    const re = /\*\*([^*\n]+)\*\*/g; re.lastIndex = from;
+    const m = re.exec(s);
+    return m ? { start: m.index, end: m.index + m[0].length, body: m[1] } : null;
+  }
+  if (kind === "link") {
+    const re = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g; re.lastIndex = from;
+    const m = re.exec(s);
+    return m ? { start: m.index, end: m.index + m[0].length, body: m[1], url: m[2] } : null;
+  }
+  return null;
+}
+
+// Expose tokenizer for unit testing
+if (typeof window !== "undefined") window.rtvTokenizeInlineMd = rtvTokenizeInlineMd;
+
+function renderInlineMarkdown(s) {
+  if (!s) return null;
+  const tokens = rtvTokenizeInlineMd(s);
+  if (tokens.length === 0) return s;
+  return tokens.map((t, i) => {
+    if (t.kind === "code") {
+      return (
+        <code key={i} className="rtv-inline-code px-1 py-0.5 rounded text-[12px] font-mono"
+              style={{ background: "#F3F1EC", color: "#8F4E2C", border: "1px solid #E8E6DE" }}>
+          {t.value}
+        </code>
+      );
+    }
+    if (t.kind === "bold") {
+      return <strong key={i} className="font-semibold">{t.value}</strong>;
+    }
+    if (t.kind === "link") {
+      return (
+        <a key={i} href={t.url} target="_blank" rel="noopener noreferrer"
+           className="underline" style={{ color: "#4A6B8A" }}>
+          {t.value}
+        </a>
+      );
+    }
+    return <span key={i}>{t.value}</span>;
   });
 }
 
