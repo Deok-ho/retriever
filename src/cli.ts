@@ -21,6 +21,8 @@ Usage:
   retriever hub seed [path/to/cfg]     load seed config into hub DB
   retriever hub sync [project_id]      project hub data → vault markdown
   retriever hub migrate                run pending DB migrations
+  retriever hub backup [--out PATH]    VACUUM INTO snapshot of hub.db
+  retriever hub restore <PATH>         replace hub.db with a prior backup
   retriever client stdio               run as MCP client daemon (proxies to hub)
   retriever client status              queue / cache status
   retriever client push-now            flush offline queue to hub
@@ -68,6 +70,8 @@ async function main(argv: string[]): Promise<number> {
     if (sub === "seed") return runHubSeed(rest[0]);
     if (sub === "sync") return runHubSync(rest[0]);
     if (sub === "migrate") return runHubMigrate();
+    if (sub === "backup") return runHubBackup(rest);
+    if (sub === "restore") return runHubRestore(rest);
     return badUsage(`unknown hub subcommand: ${sub ?? "(none)"}`);
   }
 
@@ -186,6 +190,52 @@ async function runHubMigrate(): Promise<number> {
   hub.close();
   process.stdout.write("migrations applied.\n");
   return 0;
+}
+
+async function runHubBackup(args: string[]): Promise<number> {
+  const { backupHubDb } = await import("./hub/backup.js");
+  const { loadHubDbConfig } = await import("./db/database.js");
+  const path = await import("node:path");
+
+  const cfg = loadHubDbConfig();
+  const outIdx = args.indexOf("--out");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const target =
+    outIdx >= 0 && args[outIdx + 1]
+      ? path.resolve(args[outIdx + 1])
+      : path.join(path.dirname(cfg.dbPath), "backups", `hub-${stamp}.db`);
+  const overwrite = args.includes("--force");
+
+  try {
+    const r = backupHubDb({ source: cfg.dbPath, target, overwrite });
+    process.stdout.write(`hub backup ok — ${r.target} (${r.bytes} bytes)\n`);
+    return 0;
+  } catch (err) {
+    process.stderr.write(`backup failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
+}
+
+async function runHubRestore(args: string[]): Promise<number> {
+  const source = args.find((a) => !a.startsWith("--"));
+  if (!source) return badUsage("hub restore <PATH>: missing path");
+  const { restoreHubDb } = await import("./hub/backup.js");
+  const { loadHubDbConfig } = await import("./db/database.js");
+  const path = await import("node:path");
+  const cfg = loadHubDbConfig();
+
+  try {
+    const r = restoreHubDb({ source: path.resolve(source), target: cfg.dbPath });
+    process.stdout.write(
+      `hub restore ok — ${r.target} (${r.bytes} bytes)` +
+        (r.preservedAs ? `; previous preserved as ${r.preservedAs}` : "") +
+        "\n"
+    );
+    return 0;
+  } catch (err) {
+    process.stderr.write(`restore failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 1;
+  }
 }
 
 async function runClientStdio(): Promise<number> {
