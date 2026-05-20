@@ -1,0 +1,44 @@
+# Sensitive value patterns for transcript scrubbing.
+# Order matters: most specific patterns first (e.g. anthropic_key before openai_key).
+# Each pattern is applied with the 'g' flag.
+patterns:
+  - name: anthropic_key
+    regex: 'sk-ant-(?:api|sid)\d{2}-[A-Za-z0-9_\-]{40,}'
+    placeholder: '***REDACTED:anthropic_key***'
+
+  - name: openai_key
+    # Matches sk- and sk-proj- but NOT sk-ant- (anthropic handled above).
+    regex: 'sk-(?!ant-)(?:proj-)?[A-Za-z0-9_\-]{20,}'
+    placeholder: '***REDACTED:openai_key***'
+
+  - name: github_token
+    # gho_, ghp_, ghs_, ghu_, ghr_
+    regex: 'gh[opsur]_[A-Za-z0-9]{36,255}'
+    placeholder: '***REDACTED:github_token***'
+
+  - name: aws_access_key
+    regex: '\bAKIA[0-9A-Z]{16}\b'
+    placeholder: '***REDACTED:aws_access_key***'
+
+  - name: slack_token
+    regex: 'xox[bpoars]-[A-Za-z0-9-]{10,}'
+    placeholder: '***REDACTED:slack_token***'
+
+  - name: jwt
+    regex: 'eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}'
+    placeholder: '***REDACTED:jwt***'
+
+  - name: postgres_url
+    regex: 'postgres(?:ql)?:\/\/[^\s:@\/]+:[^\s@\/]+@[^\s\/]+'
+    placeholder: '***REDACTED:postgres_url***'
+
+  - name: bearer_token
+    # Authorization: Bearer <opaque token, 32+ chars>
+    regex: '\bBearer\s+[A-Za-z0-9_\-\.\+\/=]{32,}'
+    placeholder: '***REDACTED:bearer_token***'
+
+  - name: env_assignment
+    # KEY=value where KEY name contains an obvious secret marker
+    # and value is 8+ chars without whitespace/quotes.
+    regex: '\b(?:API_KEY|SECRET|TOKEN|PASSWORD|PRIVATE_KEY|ACCESS_KEY)[A-Z0-9_]*\s*=\s*[^\s"''#]{8,}'
+    placeholder: '***REDACTED:env_assignment***'

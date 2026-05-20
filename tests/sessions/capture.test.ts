@@ -173,6 +173,151 @@ describe("captureSessions", () => {
   });
 });
 
+describe("captureSessions — redaction", () => {
+  let tmp: string;
+  let hub: HubService;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "rtv-cap-redact-"));
+    hub = new HubService({
+      dbPath: path.join(tmp, "hub.db"),
+      attachmentsDir: path.join(tmp, "attachments"),
+    });
+  });
+  afterEach(() => {
+    hub.close();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function writeJsonl(filePath: string, lines: string[]): void {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, lines.join("\n"));
+  }
+
+  test("redacts secrets in transcript before mirror (default ON)", async () => {
+    const claudeRoot = path.join(tmp, ".claude/projects");
+    writeJsonl(
+      path.join(claudeRoot, "-r/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl"),
+      [
+        JSON.stringify({
+          type: "user",
+          timestamp: "2026-04-29T00:00:00Z",
+          cwd: "/r",
+          message: {
+            role: "user",
+            content:
+              "use sk-ant-api03-leakedABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd please",
+          },
+        }),
+      ]
+    );
+    const result = await captureSessions({
+      hub,
+      machineId: "m",
+      claudeProjectsDir: claudeRoot,
+      codexSessionsDir: path.join(tmp, "no-codex"),
+      stateFile: path.join(tmp, "state.json"),
+    });
+    expect(result.mirrored).toBe(1);
+    expect(result.redactions?.totalMatches).toBe(1);
+    expect(result.redactions?.byType.anthropic_key).toBe(1);
+    const stored = hub.sessions.read(
+      "m:claude_code:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      { include_transcript: true }
+    );
+    expect(stored?.transcript?.content).toContain("***REDACTED:anthropic_key***");
+    expect(stored?.transcript?.content).not.toContain("sk-ant-api03-leaked");
+  });
+
+  test("redact=false leaves transcript untouched", async () => {
+    const claudeRoot = path.join(tmp, ".claude/projects");
+    writeJsonl(
+      path.join(claudeRoot, "-r/bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl"),
+      [
+        JSON.stringify({
+          type: "user",
+          timestamp: "2026-04-29T00:00:00Z",
+          message: {
+            role: "user",
+            content:
+              "sk-ant-api03-leakedABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd",
+          },
+        }),
+      ]
+    );
+    const result = await captureSessions({
+      hub,
+      machineId: "m",
+      claudeProjectsDir: claudeRoot,
+      codexSessionsDir: path.join(tmp, "no-codex"),
+      stateFile: path.join(tmp, "state.json"),
+      redact: false,
+    });
+    expect(result.mirrored).toBe(1);
+    expect(result.redactions).toBeUndefined();
+    const stored = hub.sessions.read(
+      "m:claude_code:bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee",
+      { include_transcript: true }
+    );
+    expect(stored?.transcript?.content).toContain("sk-ant-api03-leaked");
+  });
+
+  test("redactStrict refuses upload when matches present", async () => {
+    const claudeRoot = path.join(tmp, ".claude/projects");
+    writeJsonl(
+      path.join(claudeRoot, "-r/cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl"),
+      [
+        JSON.stringify({
+          type: "user",
+          timestamp: "2026-04-29T00:00:00Z",
+          message: {
+            role: "user",
+            content:
+              "sk-ant-api03-leakedABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd",
+          },
+        }),
+      ]
+    );
+    const result = await captureSessions({
+      hub,
+      machineId: "m",
+      claudeProjectsDir: claudeRoot,
+      codexSessionsDir: path.join(tmp, "no-codex"),
+      stateFile: path.join(tmp, "state.json"),
+      redactStrict: true,
+    });
+    expect(result.mirrored).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].error).toMatch(/redaction_required/);
+    expect(result.errors[0].error).toMatch(/anthropic_key/);
+    expect(hub.sessions.list({})).toHaveLength(0);
+  });
+
+  test("redactStrict allows upload when no matches", async () => {
+    const claudeRoot = path.join(tmp, ".claude/projects");
+    writeJsonl(
+      path.join(claudeRoot, "-r/dddddddd-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl"),
+      [
+        JSON.stringify({
+          type: "user",
+          timestamp: "2026-04-29T00:00:00Z",
+          message: { role: "user", content: "harmless prose only" },
+        }),
+      ]
+    );
+    const result = await captureSessions({
+      hub,
+      machineId: "m",
+      claudeProjectsDir: claudeRoot,
+      codexSessionsDir: path.join(tmp, "no-codex"),
+      stateFile: path.join(tmp, "state.json"),
+      redactStrict: true,
+    });
+    expect(result.mirrored).toBe(1);
+    expect(result.errors).toHaveLength(0);
+  });
+});
+
 describe("git hook install/uninstall", () => {
   let tmpRepo: string;
   beforeEach(() => {

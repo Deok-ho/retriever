@@ -12,3 +12,7 @@ scripts/seed-config.json
 
 # Claude Code per-machine local settings (permission allowlists etc.)
 .claude/settings.local.json
+
+# Local env (hub token etc.) — never commit
+.env
+.env.local

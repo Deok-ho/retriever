@@ -10,6 +10,19 @@ import type {
   SessionTranscriptRow,
 } from "./types.js";
 import { deriveFilesTouched } from "./files-touched.js";
+import { redactSecrets, totalRedactions } from "./redact.js";
+
+export class RedactionRequiredError extends Error {
+  readonly patterns: string[];
+  constructor(patterns: string[]) {
+    super(
+      `redaction_required: transcript contains ${patterns.length} secret pattern(s) — ${patterns.join(",")}. ` +
+        `Re-capture without --no-redact, or pass enforce_redaction=false to bypass.`
+    );
+    this.name = "RedactionRequiredError";
+    this.patterns = patterns;
+  }
+}
 
 export interface MirrorInput {
   machine_id: string;
@@ -25,6 +38,8 @@ export interface MirrorInput {
   content_hash: string;
   events: NormalizedEvent[];
   commit_sha?: string | null;
+  /** When false, skip the server-side secret linter. Default: true (enforce). */
+  enforce_redaction?: boolean;
 }
 
 export interface ListFilter {
@@ -111,6 +126,17 @@ export class SessionRepo {
       input.harness,
       input.native_id
     );
+
+    // Server-side secret linter (Phase 3.3). Default ON.
+    // Pattern matches throw before any DB write — we never persist raw secrets
+    // unless caller explicitly opts out via enforce_redaction=false.
+    if (input.enforce_redaction !== false) {
+      const { counts } = redactSecrets(input.transcript_content);
+      if (totalRedactions(counts) > 0) {
+        throw new RedactionRequiredError(Object.keys(counts).sort());
+      }
+    }
+
     const now = new Date().toISOString();
     const status: SessionStatus = input.status ?? "active";
     const bytes_total = Buffer.byteLength(input.transcript_content, "utf8");

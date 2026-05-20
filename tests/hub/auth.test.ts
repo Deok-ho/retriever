@@ -35,6 +35,9 @@ describe("Hub HTTP auth — global gate (Codex iter5 #1 fix)", () => {
           payload: { text: "secret content" },
         },
       ],
+      // Auth fixture intentionally embeds a secret-like string;
+      // bypass the linter so we can assert auth gating in isolation.
+      enforce_redaction: false,
     });
   });
 

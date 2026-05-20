@@ -26,7 +26,7 @@ Usage:
   retriever client stdio               run as MCP client daemon (proxies to hub)
   retriever client status              queue / cache status
   retriever client push-now            flush offline queue to hub
-  retriever client capture-sessions [--commit-sha SHA]
+  retriever client capture-sessions [--commit-sha SHA] [--no-redact] [--strict]
                                        scan ~/.claude + ~/.codex jsonls and mirror to hub
   retriever client session-status      capture-state.json snapshot
   retriever git-hook install [--repo PATH]    install post-commit capture hook
@@ -265,6 +265,8 @@ async function runCaptureSessions(args: string[]): Promise<number> {
   } = await import("./sessions/capture.js");
   const commitIdx = args.indexOf("--commit-sha");
   const commitSha = commitIdx >= 0 ? args[commitIdx + 1] : null;
+  const redact = !args.includes("--no-redact");
+  const redactStrict = args.includes("--strict");
 
   const hub = new HubService();
   try {
@@ -276,10 +278,20 @@ async function runCaptureSessions(args: string[]): Promise<number> {
       codexSessionsDir: defaultCodexSessionsDir(),
       stateFile: defaultCaptureStateFile(),
       commitSha,
+      redact,
+      redactStrict,
     });
     process.stdout.write(
       `capture-sessions ok — machine=${machineId} scanned=${result.scanned} mirrored=${result.mirrored} skipped=${result.skipped} errors=${result.errors.length}\n`
     );
+    if (result.redactions) {
+      const byType = Object.entries(result.redactions.byType)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(",");
+      process.stdout.write(
+        `  redacted: ${result.redactions.totalMatches} matches in ${result.redactions.filesAffected} files (${byType})\n`
+      );
+    }
     if (result.errors.length) {
       for (const e of result.errors.slice(0, 10)) {
         process.stderr.write(`  ! ${e.file}: ${e.error}\n`);

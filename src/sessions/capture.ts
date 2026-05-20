@@ -6,6 +6,7 @@ import * as os from "node:os";
 import type { HubService } from "../hub/service.js";
 import { parseClaudeCodeJsonl } from "./parse-claude-code.js";
 import { parseCodexJsonl } from "./parse-codex.js";
+import { redactSecrets, totalRedactions, type RedactCounts } from "./redact.js";
 import type { Harness, ParseResult } from "./types.js";
 
 const HOOK_HEADER = "# Created by `retriever git-hook install`. Edits will be overwritten.";
@@ -30,6 +31,18 @@ export interface CaptureOptions {
   codexSessionsDir: string;
   stateFile: string;
   commitSha?: string | null;
+  /** Apply secret redaction to transcript before mirror. Default: true. */
+  redact?: boolean;
+  /** When true, refuse to mirror any file containing secret matches. Default: false. */
+  redactStrict?: boolean;
+  /** Regex allowlist — matches are skipped from redaction (e.g. demo dummy keys). */
+  redactAllowlist?: RegExp[];
+}
+
+export interface RedactionSummary {
+  totalMatches: number;
+  filesAffected: number;
+  byType: RedactCounts;
 }
 
 export interface CaptureResult {
@@ -37,6 +50,7 @@ export interface CaptureResult {
   mirrored: number;
   skipped: number;
   errors: Array<{ file: string; error: string }>;
+  redactions?: RedactionSummary;
 }
 
 interface CaptureState {
@@ -132,6 +146,9 @@ export async function captureSessions(opts: CaptureOptions): Promise<CaptureResu
   const result: CaptureResult = { scanned: 0, mirrored: 0, skipped: 0, errors: [] };
   const state = await loadState(opts.stateFile);
   const hashes = state.hashes ?? {};
+  const redactEnabled = opts.redact !== false;
+  const redactionTotals: RedactCounts = {};
+  let redactionFilesAffected = 0;
 
   const files = [
     ...(await walkClaudeProjects(opts.claudeProjectsDir)),
@@ -147,6 +164,28 @@ export async function captureSessions(opts: CaptureOptions): Promise<CaptureResu
       result.errors.push({ file: file.path, error: String(err) });
       continue;
     }
+
+    if (redactEnabled) {
+      const { redacted, counts } = redactSecrets(content, {
+        allowlist: opts.redactAllowlist,
+      });
+      const total = totalRedactions(counts);
+      if (total > 0) {
+        if (opts.redactStrict) {
+          result.errors.push({
+            file: file.path,
+            error: `redaction_required: ${Object.keys(counts).join(",")}`,
+          });
+          continue;
+        }
+        redactionFilesAffected += 1;
+        for (const k of Object.keys(counts)) {
+          redactionTotals[k] = (redactionTotals[k] ?? 0) + counts[k];
+        }
+        content = redacted;
+      }
+    }
+
     const hash = sha256(content);
     let parsed: ParseResult;
     try {
@@ -183,6 +222,9 @@ export async function captureSessions(opts: CaptureOptions): Promise<CaptureResu
         content_hash: hash,
         events: parsed.events,
         commit_sha: opts.commitSha ?? null,
+        // When client-side redact is off the user is intentionally pushing raw
+        // text — let the hub linter through too so behavior is symmetric.
+        enforce_redaction: redactEnabled,
       });
       hashes[session_uid] = hash;
       result.mirrored += 1;
@@ -195,6 +237,14 @@ export async function captureSessions(opts: CaptureOptions): Promise<CaptureResu
     last_captured_at: new Date().toISOString(),
     hashes,
   });
+
+  if (redactEnabled && redactionFilesAffected > 0) {
+    result.redactions = {
+      totalMatches: totalRedactions(redactionTotals),
+      filesAffected: redactionFilesAffected,
+      byType: redactionTotals,
+    };
+  }
 
   return result;
 }

@@ -14,8 +14,7 @@ services:
       - RTV_HUB_DIR=/data
       - RTV_HUB_HOST=0.0.0.0
       - RTV_HUB_PORT=8731
-      # Uncomment to require Bearer auth for non-loopback callers:
-      # - RTV_HUB_TOKEN=change-me
+      - RTV_HUB_TOKEN=${RTV_HUB_TOKEN:?set RTV_HUB_TOKEN before docker compose up}
 
 volumes:
   rtv-hub-data:
